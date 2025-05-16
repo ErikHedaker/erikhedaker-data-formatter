@@ -72,7 +72,7 @@ export function format(arg, options = { attachValueType: false }, expObj) {
         [`date`, data instanceof Date],
         [`error`, data instanceof Error],
         [`array`, isArrayLikeOnly(data, receiver)],
-    ].find(selectPredicate)?.[0] ?? typeof data;
+    ].find(selectTruthy)?.[0] ?? typeof data;
     return `${opts.attachValueType ? `<${valueType(data)}>` : ``}${({
         filtered: () => filtered,
         function: () => `[${data.name}]`,
@@ -87,12 +87,12 @@ function formatFiltered(target, opts, expObj) {
     if (Boolean(data) && typeof data === `object`) {
         //const identifyObj = obj => obj?.name || obj?.constructor.name || valueType(obj);
         const { indent, indentPrev } = indentation(target, opts);
-        const formatOut = (prepend, append, str) => `{${prepend}${str}${append}}`;
+        const formatOut = (str, prepend, append) => `{${prepend}${str}${append}}`;
         const formatOutput = str => formatOut(str, indent, indentPrev);
         const formatSimple = str => formatOut(str, ``, ``);
         const filterObj = arg => opts.FilteredObjects.find(obj => obj === arg);
         const prtype = Object.getPrototypeOf(data);
-        const keys = Reflect.ownKeys(data);
+        const keyLen = Reflect.ownKeys(data).length;
         const targetFiltered = filterObj(data);
         const prtypeFiltered = filterObj(prtype);
         const targetExpanded = expObj.get(data);
@@ -100,14 +100,14 @@ function formatFiltered(target, opts, expObj) {
         if (Boolean(targetFiltered)) {
             return formatSimple(`is-filtered`);
         }
-        if (Boolean(prtypeFiltered) && !keys.length) {
+        if (Boolean(prtypeFiltered) && !keyLen) {
             return formatSimple(`is-filtered`);
         }
         if (Boolean(targetExpanded)) {
             targetExpanded.push(path);
             return formatOutput(`is-copy-of-( ${targetExpanded[0].join(`.`)} )`);
         }
-        if (Boolean(prtypeExpanded) && !keys.length) {
+        if (Boolean(prtypeExpanded) && !keyLen) {
             prtypeExpanded.push(path);
             return formatOutput(`is-copy-of-( ${prtypeExpanded[0].join(`.`)} )`);
         }
@@ -136,7 +136,6 @@ function formatObject(arg, opts, expObj = new Map()) {
     const target = Target.normalize(arg);
     const { indent, indentPrev } = indentation(target, opts);
     const { data, name, receiver, path } = target;
-    const isArrayLikeObj = isArrayLike(data, receiver);
     const keys = Reflect.ownKeys(data);
     expObj.set(data, [path]);
     const formatPropertyKeys = properties => {
@@ -148,42 +147,50 @@ function formatObject(arg, opts, expObj = new Map()) {
     const formatProperties = properties => {
         const longest = (max, [key]) => max.length > key.length ? max : key;
         const pad = format(properties.reduce(longest, ``)).length;
-        return properties.map(([key, value, desc]) => format(key).padEnd(pad) + ` = ` + format(
+        return properties.map(([key, value, desc]) => `${format(key).padEnd(pad)} = ${format(
             new Target(value, key, path.concat(formatAccess(key)), indent), opts, expObj
-        ) + formatDescriptor(desc) + indent).join(``);
+        )}${formatDescriptor(desc)}${indent}`).join(``);
     };
     const formatPrototype = () => {
         const prtype = Object.getPrototypeOf(data);
         const access = formatAccess(name);
         const prtypeType = `[[${valueType(prtype)}]]`;
-        return `${indentPrev}|[getPrototypeOf( ${access} )] = ${format(new Target(
-            prtype, `${access}.${prtypeType}`, path.concat(prtypeType), indentPrev + `|`, receiver
-        ), opts, expObj)}`;
+        const prtypeSpacing = 2;
+        const prtypeIndent = str => `${indentPrev}${opts.indentCharacter.padEnd(prtypeSpacing, str)}`;
+        return `${prtypeIndent(`-`)}[getPrototypeOf( ${access} )] = ${format(new Target(
+            prtype, `${access}.${prtypeType}`, path.concat(prtypeType), prtypeIndent(` `), receiver
+        ), opts, expObj)}${indent}`;
     };
     const PropertyGroup = class {
         constructor(formatter, header, predicate, validator = function() {
             return this.properties.length !== 0;
         }) {
             this.properties = [];
-            this.formatter = () => (header ? `${indentPrev}${opts.indentCharacter}${`-#`.padStart(
-                opts.indentedSpacing, `-`
-            )} ${header}(${this.properties.length})${indent}` : ``) + formatter(this.properties);
+            this.formatter = () => (!header ? `` :
+                `${indentPrev}${opts.indentCharacter}${`-#`.padStart(
+                    opts.indentedSpacing, `-`
+                )} ${header}(${this.properties.length})${indent}`
+            ) + formatter(this.properties);
             this.predicate = predicate;
             this.validator = validator;
         }
     };
+    const isArrayItem = (isParentArray =>
+        ([key]) => isParentArray && parseInt(String(key)) >= 0
+    )(isArrayLike(data, receiver));
     const groups = [
         new PropertyGroup(formatProperties, `primitive`, () => false),
-        new PropertyGroup(formatProperties, `array-item`, ([k]) => isArrayLikeObj && parseInt(String(k)) >= 0),
-        new PropertyGroup(formatProperties, `getter`, ([, v, d]) => v != null && isGetter(d)),
-        new PropertyGroup(formatProperties, `array`, ([k, v]) => isArrayLike(v, receiver[k])),
+        new PropertyGroup(formatProperties, `getter`, ([, v, desc]) => v != null && isGetter(desc)),
+        new PropertyGroup(formatProperties, `array-item`, isArrayItem),
         new PropertyGroup(formatProperties, `object`, ([, v]) => Boolean(v) && typeof v === `object`),
+        new PropertyGroup(formatProperties, `array`, ([k, v]) => isArrayLike(v, receiver[k])),
         new PropertyGroup(formatPropertyKeys, `function`, ([, v]) => typeof v === `function`),
         new PropertyGroup(formatPropertyKeys, `null`, ([, v]) => v === null),
         new PropertyGroup(formatPropertyKeys, `undefined`, ([, v]) => v === undefined),
         new PropertyGroup(formatPrototype, ``, () => false, () => true),
     ];
     // add array and iterable keys into Set, filter keys based on that
+    const triCompare = (lhs, rhs) => lhs !== rhs ? lhs > rhs ? 1 : -1 : 0;
     keys.map(key => {
         try {
             return [key,
@@ -191,15 +198,13 @@ function formatObject(arg, opts, expObj = new Map()) {
                 Reflect.getOwnPropertyDescriptor(data, key)
             ];
         } catch (error) {
-            return [key, error.stack, undefined];
+            return [key, error.stack];
         }
-    }).toSorted((a, b) => [
-        [typeof a[0], typeof b[0]],
-        [typeof a[1], typeof b[1]],
-        [String(a[0]), String(b[0])],
-    ].map(([lhs, rhs]) =>
-        lhs !== rhs ? lhs > rhs ? 1 : -1 : 0
-    ).find(Boolean) ?? 0).forEach(property => (
+    }).toSorted((lhs, rhs) =>
+        triCompare(typeof lhs[0], typeof rhs[0]) ||
+        triCompare(typeof lhs[1], typeof rhs[1]) ||
+        triCompare(String(lhs[0]), String(rhs[0]))
+    ).forEach(property => (
         groups.find(group => group.predicate(property)) ?? groups[0]
     ).properties.push(property));
     return `(${keys.length}){${indent}${groups.filter(
@@ -239,8 +244,11 @@ export function indentation(target = {}, options = {}) {
         indentPrev: indent,
     };
 }
+export function isObj(arg) {
+    return Boolean(arg) && typeof arg === `object`;
+}
 export function isIterable(arg) {
-    return Boolean(arg) && typeof arg === `object` && typeof arg[Symbol.iterator] === `function`;
+    return isObj(arg) && typeof arg[Symbol.iterator] === `function`;
 }
 export function isArrayLikeOnly(arg, receiver) {
     const access = receiver ?? arg;
@@ -248,7 +256,7 @@ export function isArrayLikeOnly(arg, receiver) {
 }
 export function isArrayLike(arg, receiver) {
     const access = receiver ?? arg;
-    return Boolean(arg) && typeof arg === `object` && Number.isInteger(access.length) && access.length >= 0;
+    return isObj(arg) && Number.isInteger(access.length) && access.length >= 0;
 }
 export function isGetter(desc = {}) {
     return typeof desc.get === `function`;
@@ -260,11 +268,11 @@ export function formatDescriptor(desc = {}) {
         [`W`, desc.writable === false],
         [`G`, typeof desc.get === `function`],
         [`S`, typeof desc.set === `function`],
-    ].filter(selectPredicate).map(([value]) => value).join(``);
+    ].filter(selectTruthy).map(([value]) => value).join(``);
     return Boolean(descNotDefault) ? `'${descNotDefault}` : ``;
 }
-export function selectPredicate(pair) {
-    return pair[1];
+export function selectTruthy(pair) {
+    return Boolean(pair[1]);
 }
 export function templateBreak({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
