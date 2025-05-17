@@ -1,15 +1,23 @@
 'use strict';
-const optionsDefault = {
-    attachValueType: true,
-    indentCharacter: `|`,
-    indentedSpacing: 4,
-    arrLimitNewline: 40,
-    grpLimitNewline: 40,
-    invokePrototype: true,
-    FilteredObjects: [
-        Object.prototype,
-    ],
-    invokeAsyncData: {
+const knownSymbols = Reflect.ownKeys(Symbol).map(
+    key => Symbol[key]
+).filter(value => typeof value === `symbol`);
+const defaultOptions = {
+    attachType: false,
+    newlineLimitArray: 40,
+    newlineLimitGroup: 40,
+    indentPad: ` `,
+    indentAdd: `|`,
+    indentNum: 6,
+    prototype: {
+        indentPad: ` `,
+        indentAdd: `|`,
+        indentNum: 3,
+        exclude: [
+            Object.prototype
+        ],
+    },
+    invokeAsync: {
         enabled: true,
         timeout: 100,
     },
@@ -28,9 +36,11 @@ const optionsDefault = {
         },
     },
 };
-const wellknown = Reflect.ownKeys(Symbol).map(key => Symbol[key]).filter(value => typeof value === `symbol`);
+export function normalizeOptions(arg) {
+    return arg !== defaultOptions && isObj(arg) ? ({ ...defaultOptions, ...arg }) : defaultOptions;
+}
 export function log(...args) {
-    logCustom({ attachValueType: true }, ...args);
+    logCustom({ attachType: true }, ...args);
 }
 export function logCustom(options, ...args) {
     const header = `[${new URL(import.meta.url).pathname.slice(1)}].${log.name}`;
@@ -49,7 +59,7 @@ export function logCustom(options, ...args) {
     }).join(``)}`);
     // make objDone to Map, filter all entries above 1, print last
 }
-export function format(arg, options = { attachValueType: false }, expObj) {
+export function format(arg, opt, expObj) {
     /*
         // _iterable: x => use Iterator.prototype.take, spread iterator,
         // create object with resulting array and receiver object and pass to formatObj
@@ -57,10 +67,10 @@ export function format(arg, options = { attachValueType: false }, expObj) {
         // add function invocation
         // add date object output
     */
-    const opts = normalizeOptions(options);
+    const options = normalizeOptions(opt);
     const target = Target.normalize(arg);
     const { data, receiver } = target;
-    const filtered = formatFiltered(target, opts, expObj);
+    const filtered = formatFiltered(target, options, expObj);
     const dispatch = [
         //iterable
         //asynciterable (await with timeout)
@@ -73,73 +83,71 @@ export function format(arg, options = { attachValueType: false }, expObj) {
         [`error`, data instanceof Error],
         [`array`, isArrayLikeOnly(data, receiver)],
     ].find(selectTruthy)?.[0] ?? typeof data;
-    return `${opts.attachValueType ? `<${valueType(data)}>` : ``}${({
+    return `${options.attachType ? `<${valueType(data)}>` : ``}${({
         filtered: () => filtered,
         function: () => `[${data.name}]`,
         string: () => `["${data}"]`,
         symbol: () => formatSymbol(data),
-        object: () => formatObject(target, opts, expObj),
-        array: () => formatArray(target, opts, expObj),
+        object: () => formatObject(target, options, expObj),
+        array: () => formatArray(target, options, expObj),
     })[dispatch]?.() ?? `[${String(data)}]`}`;
 }
-function formatFiltered(target, opts, expObj) {
+function formatFiltered(target, options, expObj) {
     const { data, path } = target;
-    if (Boolean(data) && typeof data === `object`) {
-        //const identifyObj = obj => obj?.name || obj?.constructor.name || valueType(obj);
-        const { indent, indentPrev } = indentation(target, opts);
-        const formatOut = (str, prepend, append) => `{${prepend}${str}${append}}`;
-        const formatOutput = str => formatOut(str, indent, indentPrev);
-        const formatSimple = str => formatOut(str, ``, ``);
-        const filterObj = arg => opts.FilteredObjects.find(obj => obj === arg);
-        const prtype = Object.getPrototypeOf(data);
-        const keyLen = Reflect.ownKeys(data).length;
-        const targetFiltered = filterObj(data);
-        const prtypeFiltered = filterObj(prtype);
-        const targetExpanded = expObj.get(data);
-        const prtypeExpanded = expObj.get(prtype);
-        if (Boolean(targetFiltered)) {
-            return formatSimple(`is-filtered`);
+    if (isObj(data)) {
+        const [indent, indentPrev] = indentNext(target, options);
+        const formatFilter = (prepend, append) => str => `{${prepend}${str}${append}}`;
+        const formatOutput = formatFilter(indent, indentPrev);
+        const formatSingle = formatFilter(``, ``);
+        const isExcluded = arg => options.prototype.exclude.some(obj => obj === arg);
+        const objEmpty = Reflect.ownKeys(data).length === 0;
+        const objPtype = Object.getPrototypeOf(data);
+        const expValue = expObj.get(data);
+        const expPtype = expObj.get(objPtype);
+        if (isExcluded(data)) {
+            return formatSingle(`is-filtered`);
         }
-        if (Boolean(prtypeFiltered) && !keyLen) {
-            return formatSimple(`is-filtered`);
+        if (isExcluded(objPtype) && objEmpty) {
+            return formatSingle(`is-filtered`);
         }
-        if (Boolean(targetExpanded)) {
-            targetExpanded.push(path);
-            return formatOutput(`is-copy-of-( ${targetExpanded[0].join(`.`)} )`);
+        if (Boolean(expValue)) {
+            expValue.push(path);
+            return formatOutput(`is-copy-of-( ${expValue[0].join(`.`)} )`);
         }
-        if (Boolean(prtypeExpanded) && !keyLen) {
-            prtypeExpanded.push(path);
-            return formatOutput(`is-copy-of-( ${prtypeExpanded[0].join(`.`)} )`);
+        if (Boolean(expPtype) && objEmpty) {
+            expPtype.push(path);
+            return formatOutput(`is-copy-of-( ${expPtype[0].join(`.`)} )`);
         }
     }
     return null;
 }
-function formatIterable(target, opts, expObj) {
+function formatIterable(target, options, expObj) {
     const { data } = target;
     const size = parseInt(data.size) || parseInt(data.length) || 20;
     const iter = data[Symbol.iterator];
 }
-function formatArray(target, opts, expObj) {
-    const { indent, indentPrev } = indentation(target, opts);
+function formatArray(target, options, expObj) {
+    const [indent, indentPrev] = indentNext(target, options);
     const { name, path, receiver } = target;
     const arr = Array.from(receiver);
-    const newline = arr.length < opts.arrLimitNewline;
+    const newline = arr.length < options.newlineLimitArray;
     const str = (delim, add) => `(${arr.length})[${delim}${arr.map((item, index) => {
         const indexed = `${name}[${index}]`;
-        return format(new Target(item, indexed, path.concat(indexed), newline ? indent : indentPrev), opts, expObj);
+        return format(new Target(
+            item, indexed, path.concat(indexed), newline ? indent : indentPrev
+        ), options, expObj);
     }).join(`,${delim}`)}${add}]${formatOrigin(target.pathResolve())}`;
     return !arr.length ? `(0)[]` : newline ? str(indent, indentPrev) : str(` `, ` `);
 }
-function formatObject(arg, opts, expObj = new Map()) {
+function formatObject(target, options, expObj = new Map()) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
-    const target = Target.normalize(arg);
-    const { indent, indentPrev } = indentation(target, opts);
+    const [indent, indentPrev] = indentNext(target, options);
     const { data, name, receiver, path } = target;
     const keys = Reflect.ownKeys(data);
     expObj.set(data, [path]);
     const formatPropertyKeys = properties => {
-        const newline = properties.length < opts.grpLimitNewline;
+        const newline = properties.length < options.newlineLimitGroup;
         return properties.map(([key, _, desc]) =>
             format(key) + formatDescriptor(desc)
         ).join(newline ? indent : `,`) + indent;
@@ -148,18 +156,18 @@ function formatObject(arg, opts, expObj = new Map()) {
         const longest = (max, [key]) => max.length > key.length ? max : key;
         const pad = format(properties.reduce(longest, ``)).length;
         return properties.map(([key, value, desc]) => `${format(key).padEnd(pad)} = ${format(
-            new Target(value, key, path.concat(formatAccess(key)), indent), opts, expObj
+            new Target(value, key, path.concat(formatAccess(key)), indent), options, expObj
         )}${formatDescriptor(desc)}${indent}`).join(``);
     };
     const formatPrototype = () => {
-        const prtype = Object.getPrototypeOf(data);
+        const [indentPtype] = indentNext(target, options.prototype);
+        const [indentStray] = indentNext(target, { ...options.prototype, indentPad: `-` });
+        const objPtype = Object.getPrototypeOf(data);
+        const strPtype = `[[${valueType(objPtype)}]]`;
         const access = formatAccess(name);
-        const prtypeType = `[[${valueType(prtype)}]]`;
-        const prtypeSpacing = 2;
-        const prtypeIndent = str => `${indentPrev}${opts.indentCharacter.padEnd(prtypeSpacing, str)}`;
-        return `${prtypeIndent(`-`)}[getPrototypeOf( ${access} )] = ${format(new Target(
-            prtype, `${access}.${prtypeType}`, path.concat(prtypeType), prtypeIndent(` `), receiver
-        ), opts, expObj)}${indent}`;
+        return `${indentStray}[getPrototypeOf( ${access} )] = ${format(new Target(
+            objPtype, `${access}.${strPtype}`, path.concat(strPtype), indentPtype, receiver
+        ), options, expObj)}${indent}`;
     };
     const PropertyGroup = class {
         constructor(formatter, header, predicate, validator = function() {
@@ -167,8 +175,8 @@ function formatObject(arg, opts, expObj = new Map()) {
         }) {
             this.properties = [];
             this.formatter = () => (!header ? `` :
-                `${indentPrev}${opts.indentCharacter}${`-#`.padStart(
-                    opts.indentedSpacing, `-`
+                `${indentPrev}${options.indentAdd}${`-#`.padStart(
+                    options.indentNum, `-`
                 )} ${header}(${this.properties.length})${indent}`
             ) + formatter(this.properties);
             this.predicate = predicate;
@@ -182,7 +190,7 @@ function formatObject(arg, opts, expObj = new Map()) {
         new PropertyGroup(formatProperties, `primitive`, () => false),
         new PropertyGroup(formatProperties, `getter`, ([, v, desc]) => v != null && isGetter(desc)),
         new PropertyGroup(formatProperties, `array-item`, isArrayItem),
-        new PropertyGroup(formatProperties, `object`, ([, v]) => Boolean(v) && typeof v === `object`),
+        new PropertyGroup(formatProperties, `object`, ([, v]) => isObj(v)),
         new PropertyGroup(formatProperties, `array`, ([k, v]) => isArrayLike(v, receiver[k])),
         new PropertyGroup(formatPropertyKeys, `function`, ([, v]) => typeof v === `function`),
         new PropertyGroup(formatPropertyKeys, `null`, ([, v]) => v === null),
@@ -226,23 +234,15 @@ export function formatAccess(key) {
 }
 export function formatSymbol(sym) {
     const desc = sym.description;
-    return `[${wellknown.includes(sym) ? desc : Boolean(desc) ? `Symbol("${desc}")` : `Symbol()`}]`;
+    return `[${knownSymbols.includes(sym) ? desc : Boolean(desc) ? `Symbol("${desc}")` : `Symbol()`}]`;
 }
 export function valueType(arg) {
-    return typeof arg !== `object` ? typeof arg : Object.prototype.toString.call(arg).slice(8, -1);
+    return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
 }
-export function indentation(target = {}, options = {}) {
-    const {
-        indent = `\n`
-    } = target;
-    const {
-        indentCharacter = `|`,
-        indentedSpacing = 2,
-    } = options;
-    return {
-        indent: `${indent}${indentCharacter.padEnd(indentedSpacing, ` `)}`,
-        indentPrev: indent,
-    };
+export function indentNext({ indent = `\n` } = {}, {
+    indentPad, indentAdd, indentNum
+} = defaultOptions) {
+    return [indent + indentAdd.padEnd(indentNum, indentPad), indent];
 }
 export function isObj(arg) {
     return Boolean(arg) && typeof arg === `object`;
@@ -276,9 +276,6 @@ export function selectTruthy(pair) {
 }
 export function templateBreak({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
-}
-export function normalizeOptions(options = {}) {
-    return { ...optionsDefault, ...options };
 }
 class Target {
     #receiver;
