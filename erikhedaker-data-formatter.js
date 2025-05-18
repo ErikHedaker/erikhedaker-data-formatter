@@ -76,10 +76,10 @@ export function format(arg, opt, expObj) {
         // add function invocation
         // add date object output
     */
-    const options = normalizeOptions(opt);
+    const addType = isObj(opt) && opt.addType;
     const target = Target.normalize(arg);
     const { data, receiver } = target;
-    const filtered = formatFiltered(target, options, expObj);
+    const filtered = formatFiltered(target, opt, expObj);
     const dispatch = [
         //iterable
         //asynciterable (await with timeout)
@@ -90,20 +90,21 @@ export function format(arg, opt, expObj) {
         [`null`, data === null],
         [`date`, data instanceof Date],
         [`error`, data instanceof Error],
-        [`array`, isArrayOnly(receiver)],
+        [`array`, isArrayOnly(receiver)], //move to formatObject
     ].find(selectTruthy)?.[0] ?? typeof data;
-    return `${options.addType ? `<${valueType(data)}>` : ``}${({
+    return `${addType ? `<${valueType(data)}>` : ``}${({
         filtered: () => filtered,
         function: () => `[${data.name}]`,
         string: () => `["${data}"]`,
         symbol: () => formatSymbol(data),
-        object: () => formatObject(target, options, expObj),
-        array: () => formatArray(target, options, expObj),
+        object: () => formatObject(target, opt, expObj),
+        array: () => formatArray(target, opt, expObj),
     })[dispatch]?.() ?? `[${String(data)}]`}`;
 }
-export function formatFiltered(target, options, expObj) {
+export function formatFiltered(target, opt, expObj) {
     const { data, path, indent } = target;
-    if (isObj(data)) {
+    if (isObj(data) && Boolean(expObj)) {
+        const options = normalizeOptions(opt);
         const { current, previous } = indent.resolve;
         const formatFilter = (prepend, append) => str => `{${prepend}${str}${append}}`;
         const formatOutput = formatFilter(current, previous);
@@ -135,22 +136,25 @@ export function formatIterable(target, options, expObj) {
     const size = parseInt(data.size) || parseInt(data.length) || 20;
     const iter = data[Symbol.iterator];
 }
-export function formatArray(target, options, expObj) {
+export function formatArray(target, opt, expObj) {
+    const options = normalizeOptions(opt);
     const { name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const arr = Array.from(receiver);
     const newline = arr.length < options.newlineLimitArray;
-    const str = (delim, add) => `(${arr.length})[${delim}${arr.map((item, index) => {
+    const delim = newline ? current : ` `;
+    const added = newline ? previous : ` `;
+    return !arr.length ? `(0)[]` : `(${arr.length})[${delim}${arr.map((item, index) => {
         const indexed = `${name}[${index}]`;
         return format(new Target(
             item, indexed, path.concat(indexed), newline ? indent.next(options) : indent
         ), options, expObj);
-    }).join(`,${delim}`)}${add}]${formatEnding(target.pathResolve())}`;
-    return !arr.length ? `(0)[]` : newline ? str(current, previous) : str(` `, ` `);
+    }).join(`,${delim}`)}${added}]${formatEnding(target.pathResolve())}`;
 }
-export function formatObject(target, options, expObj = new Map()) {
+export function formatObject(target, opt, expObj = new Map()) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
+    const options = normalizeOptions(opt);
     const { data, name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set
@@ -285,16 +289,39 @@ export function newlineTag({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
 }
 export class Target {
+    #name;
+    #path;
+    #indent;
     #receiver;
     constructor(data, name, path, indent, receiver) {
         this.data = data;
-        this.name = name;
-        this.path = path;
-        this.indent = indent;
+        this.#name = name;
+        this.#path = path;
+        this.#indent = indent;
         this.#receiver = receiver;
+    }
+
+    get name() {
+        return this.#name ?? valueType(this.data);
+    }
+    get path() {
+        return this.#path ?? [this.name];
+    }
+    get indent() {
+        return this.#indent ?? new Indentation().next();
     }
     get receiver() {
         return this.#receiver ?? this.data;
+    }
+
+    set name(arg) {
+        this.#indent = arg;
+    }
+    set path(arg) {
+        this.#indent = arg;
+    }
+    set indent(arg) {
+        this.#indent = arg;
     }
     set receiver(arg) {
         this.#receiver = arg;
