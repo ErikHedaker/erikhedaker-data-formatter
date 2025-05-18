@@ -10,6 +10,7 @@ export const defaultOptions = {
     attachTypeSuffix: `>`,
     attachDescriptor: true,
     attachDescriptorPrefix: `'`,
+    attachDescriptorSuffix: ``,
     indentPad: ` `,
     indentStr: `|`,
     indentNum: 8,
@@ -23,6 +24,8 @@ export const defaultOptions = {
         indentPad: `-`,
         indentStr: `|`,
         indentNum: 4,
+        prefix: `[[`,
+        suffix: `]]`,
         exclude: [
             Object.prototype
         ],
@@ -58,7 +61,7 @@ export function logCustom(opt, ...args) {
     const spacer = `\n\n${`-`.repeat(31)}\n\n`;
     const indent = new Indentation();
     const expObj = new Map();
-    console.log(`${header}${args.map((arg, num) => {
+    const output = args.map((arg, num) => {
         try {
             const keys = arg && typeof arg === `object` ? Reflect.ownKeys(arg) : [];
             const captured = keys.length === 1 && valueType(arg) === `Object`;
@@ -68,7 +71,8 @@ export function logCustom(opt, ...args) {
         } catch (error) {
             return `${spacer}[${num}]: ${format(error)}`;
         }
-    }).join(``)}`);
+    }).join(``);
+    console.log(header + output);
     // make objDone to Map, filter all entries above 1, print last
 }
 export function format(arg, opt, expObj) {
@@ -95,14 +99,15 @@ export function format(arg, opt, expObj) {
         [`error`, data instanceof Error],
         [`array`, isArrayOnly(receiver)], //move to formatObject
     ].find(selectTruthy)?.[0] ?? typeof data;
-    return formatType(data, options) + (({
+    const expand = ({
         filtered: () => filtered,
         function: () => `[${data.name}]`,
         string: () => `["${data}"]`,
         symbol: () => formatSymbol(data),
         object: () => formatObject(target, options, expObj),
         array: () => formatArray(target, options, expObj),
-    })[dispatch]?.() ?? `[${String(data)}]`);
+    })[dispatch]?.() ?? `[${String(data)}]`;
+    return formatType(data, options) + expand;
 }
 export function formatFiltered(target, options, expObj) {
     const { data, path, indent } = target;
@@ -179,24 +184,25 @@ export function formatObject(target, options, expObj = new Map()) {
         }).join(current);
     };
     const formatPrototype = () => {
-        const access = formatAccess(name);
+        const optPtype = options.ptype;
         const objPtype = Object.getPrototypeOf(data);
-        const strPtype = `[[${valueType(objPtype)}]]`;
-        const indentPtype = indent.with(-1, Indentation.step(options.ptype));
+        const strPtype = `${optPtype.prefix}${valueType(objPtype)}${optPtype.suffix}`;
+        const indentPtype = indent.with(-1, Indentation.step(optPtype));
+        const access = formatAccess(name);
         const expand = format(new Target(
             objPtype, `${access}.${strPtype}`, path.concat(strPtype), indentPtype.next(options), receiver
         ), options, expObj);
         return `${indentPtype.resolve.current}[getPrototypeOf( ${access} )] = ${expand}`;
     };
     const PropertyGroup = class {
-        #tag = indent.with(-1, Indentation.step(options.header)).resolve.current + options.header.affix;
+        static #tag = indent.with(-1, Indentation.step(options.header)).resolve.current + options.header.affix;
         constructor(output, header, predicate, verify = function() {
-            return this.properties.length !== 0;
+            return this.properties.length > 0;
         }) {
             this.properties = [];
             this.predicate = predicate;
             this.output = () => !verify.call(this) ? `` : (
-                !header ? `` : `${`${this.#tag}${header}`}(${this.properties.length})${current}`
+                !header ? `` : `${`${PropertyGroup.#tag}${header}`}(${this.properties.length})${current}`
             ) + output(this.properties) + current;
         }
     };
@@ -225,7 +231,7 @@ export function formatObject(target, options, expObj = new Map()) {
                 Reflect.getOwnPropertyDescriptor(data, key)
             ];
         } catch (error) {
-            return [key, error];
+            return [key, error, undefined];
         }
     }).toSorted((lhs, rhs) =>
         ternaryCmp(typeof lhs[0], typeof rhs[0]) ||
@@ -267,6 +273,7 @@ export function formatType(data, {
 export function formatDescriptor(desc = {}, {
     attachDescriptor,
     attachDescriptorPrefix,
+    attachDescriptorSuffix,
 } = defaultOptions) {
     const descNotDefault = [
         [`W`, desc.writable === false],
@@ -278,7 +285,7 @@ export function formatDescriptor(desc = {}, {
     if (!descNotDefault || !attachDescriptor) {
         return ``;
     }
-    return `${attachDescriptorPrefix}${descNotDefault}`;
+    return `${attachDescriptorPrefix}${descNotDefault}${attachDescriptorSuffix}`;
 }
 export function valueType(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
