@@ -3,18 +3,21 @@ export const knownSymbols = Reflect.ownKeys(Symbol).map(
     key => Symbol[key]
 ).filter(value => typeof value === `symbol`);
 export const defaultOptions = {
-    addType: false,
-    addDescriptor: true,
     newlineLimitArray: 40,
     newlineLimitGroup: 40,
+    attachType: false,
+    attachTypePrefix: `<`,
+    attachTypeSuffix: `>`,
+    attachDescriptor: true,
+    attachDescriptorPrefix: `'`,
     indentPad: ` `,
     indentStr: `|`,
     indentNum: 8,
-    headerTag: {
+    header: {
         indentPad: `=`,
         indentStr: `|`,
         indentNum: 8,
-        append: `# `,
+        affix: `# `,
     },
     ptype: {
         indentPad: `-`,
@@ -47,7 +50,7 @@ export function normalizeOptions(arg) {
     return arg !== defaultOptions && isObj(arg) ? ({ ...defaultOptions, ...arg }) : defaultOptions;
 }
 export function log(...args) {
-    logCustom({ addType: true }, ...args);
+    logCustom({ attachType: true }, ...args);
 }
 export function logCustom(opt, ...args) {
     const options = normalizeOptions(opt);
@@ -76,10 +79,10 @@ export function format(arg, opt, expObj) {
         // add function invocation
         // add date object output
     */
-    const addType = isObj(opt) && opt.addType;
+    const options = normalizeOptions(opt);
     const target = Target.normalize(arg);
     const { data, receiver } = target;
-    const filtered = formatFiltered(target, opt, expObj);
+    const filtered = formatFiltered(target, options, expObj);
     const dispatch = [
         //iterable
         //asynciterable (await with timeout)
@@ -92,21 +95,20 @@ export function format(arg, opt, expObj) {
         [`error`, data instanceof Error],
         [`array`, isArrayOnly(receiver)], //move to formatObject
     ].find(selectTruthy)?.[0] ?? typeof data;
-    return `${addType ? `<${valueType(data)}>` : ``}${({
+    return formatType(data, options) + (({
         filtered: () => filtered,
         function: () => `[${data.name}]`,
         string: () => `["${data}"]`,
         symbol: () => formatSymbol(data),
-        object: () => formatObject(target, opt, expObj),
-        array: () => formatArray(target, opt, expObj),
-    })[dispatch]?.() ?? `[${String(data)}]`}`;
+        object: () => formatObject(target, options, expObj),
+        array: () => formatArray(target, options, expObj),
+    })[dispatch]?.() ?? `[${String(data)}]`);
 }
-export function formatFiltered(target, opt, expObj) {
+export function formatFiltered(target, options, expObj) {
     const { data, path, indent } = target;
     if (isObj(data) && Boolean(expObj)) {
-        const options = normalizeOptions(opt);
         const { current, previous } = indent.resolve;
-        const formatFilter = (prepend, append) => str => `{${prepend}${str}${append}}`;
+        const formatFilter = (prefix, suffix) => str => `{${prefix}${str}${suffix}}`;
         const formatOutput = formatFilter(current, previous);
         const formatSingle = formatFilter(``, ``);
         const isExcluded = arg => options.ptype.exclude.some(obj => obj === arg);
@@ -136,8 +138,7 @@ export function formatIterable(target, options, expObj) {
     const size = parseInt(data.size) || parseInt(data.length) || 20;
     const iter = data[Symbol.iterator];
 }
-export function formatArray(target, opt, expObj) {
-    const options = normalizeOptions(opt);
+export function formatArray(target, options, expObj) {
     const { name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const arr = Array.from(receiver);
@@ -151,10 +152,9 @@ export function formatArray(target, opt, expObj) {
         ), options, expObj);
     }).join(`,${delim}`)}${added}]${formatEnding(target.pathResolve())}`;
 }
-export function formatObject(target, opt, expObj = new Map()) {
+export function formatObject(target, options, expObj = new Map()) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
-    const options = normalizeOptions(opt);
     const { data, name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set
@@ -162,7 +162,7 @@ export function formatObject(target, opt, expObj = new Map()) {
     const formatPropertyKeys = properties => {
         const newline = properties.length < options.newlineLimitGroup;
         return properties.map(([key, _, desc]) =>
-            format(key) + formatDescriptor(desc)
+            format(key) + formatDescriptor(desc, options)
         ).join(newline ? current : `,`);
     };
     const formatProperties = properties => {
@@ -173,9 +173,9 @@ export function formatObject(target, opt, expObj = new Map()) {
                 value, key, path.concat(formatAccess(key)), indent.next(options)
             ), options, expObj);
             const isMultiline = expand.includes(`\n`);
-            const spacer = index < properties.length - 1 && isMultiline ? current : ``;
             const access = format(key).padEnd(isMultiline ? 0 : pad);
-            return `${access} = ${expand}${formatDescriptor(desc)}${spacer}`;
+            const spacer = index < properties.length - 1 && isMultiline ? current : ``;
+            return `${access} = ${expand}${formatDescriptor(desc, options)}${spacer}`;
         }).join(current);
     };
     const formatPrototype = () => {
@@ -189,7 +189,7 @@ export function formatObject(target, opt, expObj = new Map()) {
         return `${indentPtype.resolve.current}[getPrototypeOf( ${access} )] = ${expand}`;
     };
     const PropertyGroup = class {
-        #tag = indent.with(-1, Indentation.step(options.headerTag)).resolve.current + options.headerTag.append;
+        #tag = indent.with(-1, Indentation.step(options.header)).resolve.current + options.header.affix;
         constructor(output, header, predicate, verify = function() {
             return this.properties.length !== 0;
         }) {
@@ -254,7 +254,20 @@ export function formatSymbol(sym) {
     const desc = sym.description;
     return `[${knownSymbols.includes(sym) ? desc : Boolean(desc) ? `Symbol("${desc}")` : `Symbol()`}]`;
 }
-export function formatDescriptor(desc = {}) {
+export function formatType(data, {
+    attachType,
+    attachTypePrefix,
+    attachTypeSuffix,
+} = defaultOptions) {
+    if (!attachType) {
+        return ``;
+    }
+    return `${attachTypePrefix}${valueType(data)}${attachTypeSuffix}`;
+}
+export function formatDescriptor(desc = {}, {
+    attachDescriptor,
+    attachDescriptorPrefix,
+} = defaultOptions) {
     const descNotDefault = [
         [`W`, desc.writable === false],
         [`E`, desc.enumerable === false],
@@ -262,7 +275,10 @@ export function formatDescriptor(desc = {}) {
         [`G`, typeof desc.get === `function`],
         [`S`, typeof desc.set === `function`],
     ].filter(selectTruthy).map(([value]) => value).join(``);
-    return Boolean(descNotDefault) ? `'${descNotDefault}` : ``;
+    if (!descNotDefault || !attachDescriptor) {
+        return ``;
+    }
+    return `${attachDescriptorPrefix}${descNotDefault}`;
 }
 export function valueType(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
