@@ -117,7 +117,7 @@ export function format(arg, opt, expObj) {
     */
     const options = normalizeOptions(opt);
     const target = Target.normalize(arg);
-    const { data, receiver } = target;
+    const { data } = target;
     const type = formatData(data, options.type);
     const filtered = formatFiltered(target, options, expObj);
     const dispatch = [
@@ -130,7 +130,6 @@ export function format(arg, opt, expObj) {
         [`null`, data === null],
         [`date`, data instanceof Date],
         [`error`, data instanceof Error],
-        [`array`, isArrayOnly(receiver)], //move to formatObject
     ].find(selectTruthy)?.[0] ?? typeof data;
     const expand = ({
         filtered: () => filtered,
@@ -138,7 +137,6 @@ export function format(arg, opt, expObj) {
         string: () => formatData(`"${data}"`, options),
         symbol: () => formatSymbol(data, options),
         object: () => formatObject(target, options, expObj),
-        array: () => formatArray(target, options, expObj),
     })[dispatch]?.() ?? formatData(String(data), options);
     return type + expand;
 }
@@ -175,6 +173,9 @@ export function formatObject(target, options, expObj = new Map()) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
     const { data, name, path, indent, receiver } = target;
+    if (isArrayOnly(receiver)) {
+        return formatArray(target, options, expObj);
+    }
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set
     expObj.set(data, [path]);
@@ -200,7 +201,7 @@ export function formatObject(target, options, expObj = new Map()) {
     const formatPrototype = () => {
         const objPtype = Object.getPrototypeOf(data);
         const strPtype = formatData(objPtype, options.ptype);
-        const indPtype = indent.with(-1, Indentation.step(options.ptype));
+        const indPtype = indent.with(-1, options.ptype);
         const origin = keyToStr(name);
         const access = formatData(`getPrototypeOf( ${origin} )`, options);
         const expand = format(new Target(
@@ -209,15 +210,15 @@ export function formatObject(target, options, expObj = new Map()) {
         return `${indPtype.resolve.current}${access} = ${expand}`;
     };
     const PropertyGroup = class {
-        static #tag = indent.with(-1, Indentation.step(options.header)).resolve.current;
-        constructor(output, header, predicate, verify = function() {
+        static #tag = indent.with(-1, options.header).resolve.current;
+        constructor(formatter, header, predicate, verify = function() {
             return this.properties.length > 0;
         }) {
             this.properties = [];
             this.predicate = predicate;
             this.output = () => !verify.call(this) ? `` : (!header ? `` :
                 `${PropertyGroup.#tag}${formatData(header, options.header)}(${this.properties.length})${current}`
-            ) + output(this.properties) + current;
+            ) + formatter(this.properties) + current;
         }
     };
     // Map key/descriptor
@@ -258,8 +259,11 @@ export function formatObject(target, options, expObj = new Map()) {
         ) ?? groups[0]
     ).properties.push(property));
     const output = groups.map(group => group.output()).join(``);
-    const origin = formatData(data === receiver ? target.pathResolve() : name, options.origin);
-    return `(${keys.length}){${current}${output}${previous}}${origin}`;
+    const single = !output.includes(`\n`);
+    const prefix = single ? `` : current;
+    const suffix = single ? `` : previous;
+    const origin = single ? `` : formatData(data === receiver ? target.pathResolve() : name, options.origin);
+    return `(${keys.length}){${formatData(prefix + output + suffix, options.object)}}${origin}`;
 }
 export function formatArray(target, options, expObj) {
     const { name, path, indent, receiver } = target;
@@ -335,7 +339,7 @@ export function isGetter(desc = {}) {
 export function newlineTag({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
 }
-export class Target {
+export class Target { // Overhaul to Metadata class
     #name;
     #path;
     #indent;
@@ -347,7 +351,6 @@ export class Target {
         this.#indent = indent;
         this.#receiver = receiver;
     }
-
     get name() {
         return this.#name ?? dataType(this.data);
     }
@@ -360,7 +363,6 @@ export class Target {
     get receiver() {
         return this.#receiver ?? this.data;
     }
-
     set name(arg) {
         this.#name = arg;
     }
@@ -373,7 +375,6 @@ export class Target {
     set receiver(arg) {
         this.#receiver = arg;
     }
-
     pathResolve() {
         return isArrayLike(this.path) ? this.path.join(`.`) : this.name;
     }
@@ -392,9 +393,9 @@ export class Indentation {
             previous: this.#steps.slice(0, -1).join(``)
         };
     }
-    with(index, value) {
+    with(index, options) {
         return new Indentation(
-            this.#steps.with(index, value)
+            this.#steps.with(index, Indentation.step(options))
         );
     }
     next(options) {
@@ -402,7 +403,7 @@ export class Indentation {
             this.#steps.concat(Indentation.step(options))
         );
     }
-    static step({ indentPad, indentStr, indentNum } = defaultOptions) {
+    static step({ indentStr, indentNum, indentPad } = defaultOptions) {
         return indentStr.padEnd(indentNum, indentPad);
     }
 }
