@@ -197,7 +197,7 @@ export function formatObject(target, options, expObj = new Map()) {
     const formatPropertyKeys = properties => {
         const newline = properties.length < opts.newlineLimitGroup;
         return properties.map(({ key, descr }) =>
-            format(key) + formatDescriptor(descr)
+            format(key) + formatDescriptor(descr, opts)
         ).join(newline ? current : `,`);
     };
     const formatProperties = properties => {
@@ -210,7 +210,7 @@ export function formatObject(target, options, expObj = new Map()) {
             const multi = expand.includes(`\n`);
             const access = format(key).padEnd(multi ? 0 : pad);
             const spacer = index < properties.length - 1 && multi ? current : ``;
-            return `${access} = ${expand}${formatDescriptor(descr)}${spacer}`;
+            return `${access} = ${expand}${formatDescriptor(descr, opts)}${spacer}`;
         }).join(current);
     };
     const formatPrototype = () => { // ptype/proto
@@ -224,15 +224,13 @@ export function formatObject(target, options, expObj = new Map()) {
         ), opts, expObj);
         return `${indPtype.resolve.current}${access} = ${expand}`;
     };
-    const PropertyGroup = class {
+    const PropertyGroup = class { // maybe change constructor to use object destructure
         static #tag = indent.with(-1, opts.header).resolve.current;
-        constructor(formatter, header, predicate, verify = function() {
-            return this.mutablePropertyList.length > 0;
-        }) {
+        constructor(formatter, header, predicate = falseFn) {
             this.mutablePropertyList = [];
             this.predicate = predicate;
-            this.output = function() {
-                if (!verify.call(this)) {
+            this.expand = function() {
+                if (!this.verify()) {
                     return ``;
                 }
                 const prepend = !header ? `` : `${PropertyGroup.#tag}${formatCustom(
@@ -241,58 +239,77 @@ export function formatObject(target, options, expObj = new Map()) {
                 return prepend + formatter(this.mutablePropertyList) + current;
             };
         }
+        add(property) {
+            this.mutablePropertyList.push(property);
+        }
+        verify() {
+            return this.mutablePropertyList.length > 0;
+        }
+    };
+    const PrototypeGroup = class extends PropertyGroup {
+        constructor() {
+            super(formatPrototype, ``);
+        }
+        add() {
+            return;
+        }
+        verify() {
+            return !opts.ptype.format.ignore;
+        }
     };
     // Map key/descriptor
-    const ignore = () => false;
     const isGetterNonNullish = (v, descr) => v != null && isGetter(descr);
     const isArrayItem = (isParentArray =>
         ([key]) => isParentArray && parseInt(String(key)) >= 0
     )(isArrayLike(receiver));
     const groups = [
-        new PropertyGroup(formatProperties, `primitive`, ignore),
+        new PropertyGroup(formatProperties, `primitive`),
         new PropertyGroup(formatProperties, `getter`, isGetterNonNullish),
-        new PropertyGroup(formatProperties, `array-item`, ignore),
         new PropertyGroup(formatProperties, `object`, isObj),
         new PropertyGroup(formatProperties, `array`, isArrayLike),
         new PropertyGroup(formatPropertyKeys, `function`, v => typeof v === `function`),
         new PropertyGroup(formatPropertyKeys, `null`, v => v === null),
         new PropertyGroup(formatPropertyKeys, `undefined`, v => v === undefined),
-        new PropertyGroup(formatPrototype, ``, ignore, () => !opts.ptype.format.ignore),
+        new PrototypeGroup(),
     ];
     // add array and iterable keys into Set, filter keys based on that
-    const [fallback] = groups;
-    const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
-    keys.map(key => {
+    const keyToProperty = key => {
         try {
             return {
                 key,
                 value: Reflect.get(data, key, receiver),
-                descr: Reflect.getOwnPropertyDescriptor(data, key)
+                descr: Reflect.getOwnPropertyDescriptor(data, key),
             };
         } catch (error) {
-            return { key, value: error };
+            return { key, value: error, descr: undefined };
         }
-    }).toSorted((lhs, rhs) => {
+    };
+    const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
+    const sortProperty = (lhs, rhs) => {
         const keyLHS = lhs.key;
         const keyRHS = rhs.key;
         const valueLHS = lhs.value;
         const valueRHS = rhs.value;
-        return ternaryCmp(typeof keyLHS, typeof keyRHS) ||
+        return (
+            ternaryCmp(typeof keyLHS, typeof keyRHS) ||
             ternaryCmp(isObj(valueLHS), isObj(valueRHS)) ||
             ternaryCmp(typeof valueLHS, typeof valueRHS) ||
-            ternaryCmp(String(keyLHS), String(keyRHS));
-    }).forEach(property => {
-        const { value, descr } = property;
-        const target = groups.find(group => group.predicate(value, descr)) ?? fallback;
-        target.mutablePropertyList.push(property);
-    });
+            ternaryCmp(String(keyLHS), String(keyRHS))
+        );
+    };
+    const selectGroup = ({ value, descr }, fallback) => groups.find(
+        group => group.predicate(value, descr)
+    ) ?? fallback;
+    keys.map(keyToProperty).toSorted(sortProperty).forEach(
+        property => selectGroup(property, groups[0]).add(property)
+    );
     expObj.set(data, [path]);
-    const output = groups.map(group => group.output()).join(``);
-    const single = !output.includes(`\n`);
+    const expand = groups.map(group => group.expand()).join(``);
+    const single = !expand.includes(`\n`);
     const prefix = single ? `` : current;
     const suffix = single ? `` : previous;
     const origin = single ? `` : formatCustom(data === receiver ? target.pathResolve() : name, opts.origin);
-    return `(${keys.length})${formatCustom(prefix + output + suffix, opts.object)}${origin}`;
+    return `(${keys.length})${formatCustom(prefix + expand + suffix, opts.object)}${origin}`;
 }
 export function formatArray(target, options, expObj) {
     const opts = optionsNormalize(options);
@@ -327,7 +344,7 @@ export function formatSymbol(sym, options) {
     const str = knownSymbols.includes(sym) ? msg : Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`;
     return formatCustom(str, options);
 }
-export function formatDescriptor(descr = {}, options = defaults.descriptor) {
+export function formatDescriptor(descr = {}, options) {
     const descrModified = [
         [`W`, descr.writable === false],
         [`E`, descr.enumerable === false],
@@ -335,7 +352,7 @@ export function formatDescriptor(descr = {}, options = defaults.descriptor) {
         [`G`, typeof descr.get === `function`],
         [`S`, typeof descr.set === `function`],
     ].filter(selectTruthy).map(([value]) => value).join(``);
-    return !descrModified ? `` : formatCustom(descrModified, options);
+    return !descrModified ? `` : formatCustom(descrModified, options.descriptor);
 }
 export function formatCustom(arg, { format: {
     ignore = false,
@@ -369,6 +386,12 @@ export function isObj(arg) {
 export function isGetter(desc = {}) {
     return typeof desc.get === `function`;
 }
+export function falseFn() {
+    return false;
+}
+export function partial(fn, ...partials) {
+    return (...args) => fn(...partials, ...args);
+};
 export function newlineTag({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
 }
