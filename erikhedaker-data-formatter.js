@@ -239,19 +239,16 @@ export function formatObject(target, options, expObj = new Map()) {
                 return prepend + formatter(this.mutablePropertyList) + current;
             };
         }
-        add(property) {
-            this.mutablePropertyList.push(property);
-        }
         verify() {
             return this.mutablePropertyList.length > 0;
+        }
+        add(property) {
+            this.mutablePropertyList.push(property);
         }
     };
     const PrototypeGroup = class extends PropertyGroup {
         constructor() {
             super(formatPrototype, ``);
-        }
-        add() {
-            return;
         }
         verify() {
             return !opts.ptype.format.ignore;
@@ -305,11 +302,9 @@ export function formatObject(target, options, expObj = new Map()) {
     );
     expObj.set(data, [path]);
     const expand = groups.map(group => group.expand()).join(``);
-    const single = !expand.includes(`\n`);
-    const prefix = single ? `` : current;
-    const suffix = single ? `` : previous;
-    const origin = single ? `` : formatCustom(data === receiver ? target.pathResolve() : name, opts.origin);
-    return `(${keys.length})${formatCustom(prefix + expand + suffix, opts.object)}${origin}`;
+    const [prepend, append, originate] = !expand.includes(`\n`) ? [``, ``, ``] :
+        [current, previous, formatCustom(data === receiver ? target.pathResolve() : name, opts.origin)];
+    return `(${keys.length})${formatCustom(prepend + expand + append, opts.object)}${originate}`;
 }
 export function formatArray(target, options, expObj) {
     const opts = optionsNormalize(options);
