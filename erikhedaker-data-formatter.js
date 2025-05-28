@@ -192,87 +192,30 @@ export function formatObject(target, options, expObj = new Map()) {
     const opts = optionsNormalize(options);
     const { data, name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
-    const keys = Reflect.ownKeys(data); // Set
+    const keys = Reflect.ownKeys(data); // Set // add array and iterable keys into Set, filter keys based on that
     if (isArrayOnly(receiver, keys)) {
         return formatArray(target, opts, expObj);
     }
-    const formatPropertyKeys = properties => {
-        const newline = properties.length < opts.newlineLimitGroup;
-        return properties.map(({ key, descr }) =>
-            format(key) + formatDescriptor(descr, opts)
-        ).join(newline ? current : `,`);
-    };
-    const formatProperties = properties => {
-        const longest = (max, { key }) => max.length > key.length ? max : key;
-        const pad = format(properties.reduce(longest, ``)).length;
-        return properties.map(({ key, value, descr }, index) => {
-            const expand = format(new Target(
-                value, key, path.concat(keyStr(key)), indent.next(opts)
-            ), opts, expObj);
-            const multi = expand.includes(`\n`);
-            const access = format(key).padEnd(multi ? 0 : pad);
-            const spacer = index < properties.length - 1 && multi ? current : ``;
-            return `${access} = ${expand}${formatDescriptor(descr, opts)}${spacer}`;
-        }).join(current);
-    };
-    const formatPrototype = () => { // ptype/proto
-        const objPtype = Object.getPrototypeOf(data);
-        const strPtype = formatCustom(objPtype, opts.ptype);
-        const indPtype = indent.with(-1, opts.ptype);
-        const origin = keyStr(name);
-        const access = formatCustom(`getPrototypeOf( ${origin} )`, opts);
-        const expand = format(new Target(
-            objPtype, `${origin}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
-        ), opts, expObj);
-        return `${indPtype.resolve.current}${access} = ${expand}`;
-    };
-    const PropertyGroup = class { // maybe change constructor to use object destructure
-        static #tag = indent.with(-1, opts.header).resolve.current;
-        constructor(formatter, header, predicate = falseFn) {
-            this.mutablePropertyList = [];
-            this.predicate = predicate;
-            this.expand = function() {
-                if (!this.verify()) {
-                    return ``;
-                }
-                const prepend = !header ? `` : `${PropertyGroup.#tag}${formatCustom(
-                    header, opts.header
-                )}(${this.mutablePropertyList.length})${current}`;
-                return prepend + formatter(this.mutablePropertyList) + current;
-            };
-        }
-        verify() {
-            return this.mutablePropertyList.length > 0;
-        }
-        add(property) {
-            this.mutablePropertyList.push(property);
-        }
-    };
-    const PrototypeGroup = class extends PropertyGroup {
-        constructor() {
-            super(formatPrototype, ``);
-        }
-        verify() {
-            return !opts.ptype.format.ignore;
-        }
-    };
-    // Map key/descriptor
     const isGetterNonNullish = (v, descr) => v != null && isGetter(descr);
     const isArrayItem = (isParentArray =>
         ([key]) => isParentArray && parseInt(String(key)) >= 0
     )(isArrayLike(receiver));
-    const groups = [
-        new PropertyGroup(formatProperties, `primitive`),
-        new PropertyGroup(formatProperties, `getter`, isGetterNonNullish),
-        new PropertyGroup(formatProperties, `object`, isObj),
-        new PropertyGroup(formatProperties, `array`, isArrayLike),
-        new PropertyGroup(formatPropertyKeys, `function`, v => typeof v === `function`),
-        new PropertyGroup(formatPropertyKeys, `null`, v => v === null),
-        new PropertyGroup(formatPropertyKeys, `undefined`, v => v === undefined),
-        new PrototypeGroup(),
-    ];
-    // add array and iterable keys into Set, filter keys based on that
-    const keyToProperty = key => {
+    const groups = createObjectGroups([
+        [`GroupPropertyEntry`, `primitive`],
+        [`GroupPropertyEntry`, `getter`, isGetterNonNullish],
+        [`GroupPropertyEntry`, `object`, isObj],
+        [`GroupPropertyEntry`, `array`, isArrayLike],
+        [`GroupPropertyKey`, `function`, v => typeof v === `function`],
+        [`GroupPropertyKey`, `null`, v => v === null],
+        [`GroupPropertyKey`, `undefined`, v => v === undefined],
+        [`GroupPrototype`],
+    ], target, options, expObj);
+    const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
+    const selectGroup = (fallback => ({ value, descr }) => groups.find(
+        group => group.predicate(value, descr)
+    ) ?? fallback)(groups[0]);
+    expObj.set(data, [path]);
+    keys.map(key => {
         try {
             return {
                 key,
@@ -282,9 +225,7 @@ export function formatObject(target, options, expObj = new Map()) {
         } catch (error) {
             return { key, value: error, descr: undefined };
         }
-    };
-    const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
-    const sortProperty = (lhs, rhs) => {
+    }).toSorted((lhs, rhs) => {
         const keyLHS = lhs.key;
         const keyRHS = rhs.key;
         const valueLHS = lhs.value;
@@ -295,18 +236,102 @@ export function formatObject(target, options, expObj = new Map()) {
             ternaryCmp(typeof valueLHS, typeof valueRHS) ||
             ternaryCmp(String(keyLHS), String(keyRHS))
         );
-    };
-    const selectGroup = ({ value, descr }, fallback) => groups.find(
-        group => group.predicate(value, descr)
-    ) ?? fallback;
-    keys.map(keyToProperty).toSorted(sortProperty).forEach(
-        property => selectGroup(property, groups[0]).add(property)
-    );
-    expObj.set(data, [path]);
-    const expand = groups.map(group => group.expand()).join(``);
-    const [prepend, append, originate] = !expand.includes(`\n`) ? [``, ``, ``] :
+    }).forEach(property => selectGroup(property).push(property));
+    const expand = groups.filter(group => group.verify()).map(group => group.expand()).join(``);
+    const [prepend, append, origin] = !expand.includes(`\n`) ? [``, ``, ``] :
         [current, previous, formatCustom(data === receiver ? target.pathResolve() : name, opts.origin)];
-    return `(${keys.length})${formatCustom(prepend + expand + append, opts.object)}${originate}`;
+    return `(${keys.length})${formatCustom(prepend + expand + append, opts.object)}${origin}`;
+}
+export function createObjectGroups(setup, target, options, expObj) {
+    const opts = optionsNormalize(options);
+    const { data, name, path, indent, receiver } = target;
+    const { current } = indent.resolve;
+    const tag = indent.with(-1, opts.header).resolve.current;
+    class GroupBase {
+        predicate() {
+            return false;
+        }
+        verify() {
+            return false;
+        }
+        push() {
+            return undefined;
+        }
+        expand() {
+            return ``;
+        }
+    };
+    class GroupProperty extends GroupBase {
+        constructor(header, predicate) {
+            super();
+            this.header = header;
+            this.predicate = predicate ?? this.predicate;
+            this.mutablePropertyList = [];
+        }
+        verify() {
+            return this.mutablePropertyList.length > 0;
+        }
+        push(property) {
+            this.mutablePropertyList.push(property);
+        }
+        expand() {
+            const expand = this.formatter();
+            const header = formatCustom(this.header, opts.header);
+            const length = this.mutablePropertyList.length;
+            return `${tag}${header}(${length})${current}${expand}${current}`;
+        }
+        formatter() {
+            return ``;
+        }
+    };
+    const returnTypes = {
+        GroupPropertyKey: class extends GroupProperty {
+            constructor(...args) {
+                super(...args);
+            }
+            formatter() {
+                const newline = this.mutablePropertyList.length < opts.newlineLimitGroup;
+                return this.mutablePropertyList.map(({ key, descr }) =>
+                    format(key) + formatDescriptor(descr, opts)
+                ).join(newline ? current : `,`);
+            }
+        },
+        GroupPropertyEntry: class extends GroupProperty {
+            constructor(...args) {
+                super(...args);
+            }
+            formatter() {
+                const longest = (max, { key }) => max.length > key.length ? max : key;
+                const pad = format(this.mutablePropertyList.reduce(longest, ``)).length;
+                return this.mutablePropertyList.map(({ key, value, descr }, index) => {
+                    const expand = format(new Target(
+                        value, key, path.concat(keyStr(key)), indent.next(opts)
+                    ), opts, expObj);
+                    const hasNewline = expand.includes(`\n`);
+                    const access = format(key).padEnd(hasNewline ? 0 : pad);
+                    const spacer = index < this.mutablePropertyList.length - 1 && hasNewline ? current : ``;
+                    return `${access} = ${expand}${formatDescriptor(descr, opts)}${spacer}`;
+                }).join(current);
+            }
+        },
+        GroupPrototype: class extends GroupBase {
+            verify() {
+                return !opts.ptype.format.ignore;
+            }
+            expand() {
+                const objPtype = Object.getPrototypeOf(data);
+                const strPtype = formatCustom(objPtype, opts.ptype);
+                const indPtype = indent.with(-1, opts.ptype);
+                const origin = keyStr(name);
+                const access = formatCustom(`getPrototypeOf( ${origin} )`, opts);
+                const expand = format(new Target(
+                    objPtype, `${origin}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
+                ), opts, expObj);
+                return `${indPtype.resolve.current}${access} = ${expand}${current}`;
+            }
+        },
+    };
+    return setup.map(([type, ...args]) => new returnTypes[type](...args));
 }
 export function formatArray(target, options, expObj) {
     const opts = optionsNormalize(options);
