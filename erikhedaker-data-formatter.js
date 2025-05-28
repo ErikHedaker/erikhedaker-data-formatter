@@ -146,7 +146,7 @@ export function format(arg, options, expObj) {
         [`null`, data === null],
         [`date`, data instanceof Date],
         [`error`, data instanceof Error],
-    ].find(selectTruthy)?.[0] ?? typeof data;
+    ].find(([, predicate]) => predicate)?.[0] ?? typeof data;
     const expand = ({
         filtered: () => filtered,
         function: () => formatCustom(data.name, opts),
@@ -373,7 +373,7 @@ export function formatDescriptor(descr = {}, options) {
         [`C`, descr.configurable === false],
         [`G`, typeof descr.get === `function`],
         [`S`, typeof descr.set === `function`],
-    ].filter(selectTruthy).map(([value]) => value).join(``);
+    ].filter(([, predicate]) => predicate).map(([value]) => value).join(``);
     return !descrModified ? `` : formatCustom(descrModified, options.descriptor);
 }
 export function formatCustom(arg, { format: {
@@ -386,9 +386,6 @@ export function formatCustom(arg, { format: {
 }
 export function dataType(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
-}
-export function selectTruthy(pair) {
-    return Boolean(pair[1]);
 }
 export function isArrayOnly(arg, keys) {
     return arg instanceof Array && isArrayMinimal(arg, keys);
@@ -407,9 +404,6 @@ export function isObj(arg) {
 }
 export function isGetter(desc = {}) {
     return typeof desc.get === `function`;
-}
-export function falseFn() {
-    return false;
 }
 export function newlineTag({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
