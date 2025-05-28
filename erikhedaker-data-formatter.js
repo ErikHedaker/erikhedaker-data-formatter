@@ -64,6 +64,7 @@ export const defaults = {
         },
         exclude: [
             Object.prototype,
+            Array.prototype,
         ],
     },
     invokeAsync: {
@@ -112,8 +113,9 @@ export function logCustom(options, ...args) {
             const keys = isObj(arg) ? Reflect.ownKeys(arg) : [];
             const captured = keys.length === 1 && dataType(arg) === `Object`;
             const [name, data] = captured ? [keys[0], arg[keys[0]]] : [formatCustom(arg, opts.type), arg];
+            const prepend = captured ? `${format(name)} = ` : ``;
             const expand = format(new Target(data, name, [name], indent.next(opts)), opts, expObj);
-            return `${spacer}[${num}]: ${captured ? `${format(name)} = ` : ``}${expand}`;
+            return `${spacer}[${num}]: ${prepend}${expand}`;
         } catch (error) {
             return `${spacer}[${num}]: ${format(error)}`;
         }
@@ -384,9 +386,6 @@ export function isGetter(desc = {}) {
 export function falseFn() {
     return false;
 }
-export function partial(fn, ...partials) {
-    return (...args) => fn(...partials, ...args);
-};
 export function newlineTag({ raw }, ...args) {
     return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
 }
