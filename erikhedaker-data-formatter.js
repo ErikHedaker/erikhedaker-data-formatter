@@ -65,6 +65,7 @@ export const defaults = {
         exclude: [
             Object.prototype,
             Array.prototype,
+            Iterator.prototype,
         ],
     },
     invokeAsync: {
@@ -114,8 +115,8 @@ export function logCustom(options, ...args) {
             const captured = keys.length === 1 && dataType(arg) === `Object`;
             const [name, data] = captured ? [keys[0], arg[keys[0]]] : [formatCustom(arg, opts.type), arg];
             const prepend = captured ? `${format(name)} = ` : ``;
-            const expand = format(new Target(data, name, [name], indent.next(opts)), opts, expObj);
-            return `${spacer}[${num}]: ${prepend}${expand}`;
+            const expanded = format(new Target(data, name, [name], indent.next(opts)), opts, expObj);
+            return `${spacer}[${num}]: ${prepend}${expanded}`;
         } catch (error) {
             return `${spacer}[${num}]: ${format(error)}`;
         }
@@ -147,14 +148,14 @@ export function format(arg, options, expObj) {
         [`date`, data instanceof Date],
         [`error`, data instanceof Error],
     ].find(([, predicate]) => predicate)?.[0] ?? typeof data;
-    const expand = ({
+    const expanded = ({
         filtered: () => filtered,
         function: () => formatCustom(data.name, opts),
         string: () => formatCustom(`"${data}"`, opts),
         symbol: () => formatSymbol(data, opts),
         object: () => formatObject(target, opts, expObj),
     })[dispatch]?.() ?? formatCustom(String(data), opts);
-    return type + expand;
+    return type + expanded;
 }
 export function formatFiltered(target, options, expObj) { // move back to formatObject
     const opts = optionsNormalize(options);
@@ -196,23 +197,23 @@ export function formatObject(target, options, expObj = new Map()) {
     if (isArrayOnly(receiver, keys)) {
         return formatArray(target, opts, expObj);
     }
-    const isGetterNonNullish = (v, descr) => v != null && isGetter(descr);
     const isArrayItem = (isParentArray =>
         ([key]) => isParentArray && parseInt(String(key)) >= 0
     )(isArrayLike(receiver));
     const groups = createObjectGroups([
         [`GroupPropertyEntry`, `primitive`],
-        [`GroupPropertyEntry`, `getter`, isGetterNonNullish],
-        [`GroupPropertyEntry`, `object`, isObj],
-        [`GroupPropertyEntry`, `array`, isArrayLike],
-        [`GroupPropertyKey`, `function`, v => typeof v === `function`],
-        [`GroupPropertyKey`, `null`, v => v === null],
-        [`GroupPropertyKey`, `undefined`, v => v === undefined],
+        [`GroupPropertyEntry`, `getter`, ({ value, descr }) => value != null && isGetter(descr)],
+        [`GroupIterator`],
+        [`GroupPropertyEntry`, `object`, ({ value }) => isObj(value)],
+        [`GroupPropertyEntry`, `array`, ({ value }) => isArrayLike(value)],
+        [`GroupPropertyKey`, `function`, ({ value }) => typeof value === `function`],
+        [`GroupPropertyKey`, `null`, ({ value }) => value === null],
+        [`GroupPropertyKey`, `undefined`, ({ value }) => value === undefined],
         [`GroupPrototype`],
     ], target, options, expObj);
     const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
-    const selectGroup = (fallback => ({ value, descr }) => groups.find(
-        group => group.predicate(value, descr)
+    const selectGroup = (fallback => property => groups.find(
+        group => group.predicate(property)
     ) ?? fallback)(groups[0]);
     expObj.set(data, [path]);
     keys.map(key => {
@@ -237,27 +238,27 @@ export function formatObject(target, options, expObj = new Map()) {
             ternaryCmp(String(keyLHS), String(keyRHS))
         );
     }).forEach(property => selectGroup(property).push(property));
-    const expand = groups.filter(group => group.verify()).map(group => group.expand()).join(``);
-    const [prepend, append, origin] = !expand.includes(`\n`) ? [``, ``, ``] :
+    const expanded = groups.filter(group => group.verify).map(group => group.expand).join(``);
+    const [prepend, append, origin] = !expanded.includes(`\n`) ? [``, ``, ``] :
         [current, previous, formatCustom(data === receiver ? target.pathResolve() : name, opts.origin)];
-    return `(${keys.length})${formatCustom(prepend + expand + append, opts.object)}${origin}`;
+    return `(${keys.length})${formatCustom(prepend + expanded + append, opts.object)}${origin}`;
 }
 export function createObjectGroups(setup, target, options, expObj) {
     const opts = optionsNormalize(options);
     const { data, name, path, indent, receiver } = target;
     const { current } = indent.resolve;
-    const tag = indent.with(-1, opts.header).resolve.current;
+    const prepend = indent.with(-1, opts.header).resolve.current;
     class GroupBase {
-        predicate() {
-            return false;
-        }
-        verify() {
-            return false;
-        }
-        push() {
+        push(_) {
             return undefined;
         }
-        expand() {
+        predicate(_) {
+            return false;
+        }
+        get verify() {
+            return false;
+        }
+        get expand() {
             return ``;
         }
     };
@@ -268,17 +269,17 @@ export function createObjectGroups(setup, target, options, expObj) {
             this.predicate = predicate ?? this.predicate;
             this.mutablePropertyList = [];
         }
-        verify() {
-            return this.mutablePropertyList.length > 0;
-        }
         push(property) {
             this.mutablePropertyList.push(property);
         }
-        expand() {
-            const expand = this.formatter();
-            const header = formatCustom(this.header, opts.header);
-            const length = this.mutablePropertyList.length;
-            return `${tag}${header}(${length})${current}${expand}${current}`;
+        get verify() {
+            return this.mutablePropertyList.length > 0;
+        }
+        get expand() {
+            const tag = formatCustom(this.header, opts.header);
+            const num = this.mutablePropertyList.length;
+            const str = this.formatter();
+            return `${prepend}${tag}(${num})${current}${str}${current}`;
         }
         formatter() {
             return ``;
@@ -304,30 +305,58 @@ export function createObjectGroups(setup, target, options, expObj) {
                 const longest = (max, { key }) => max.length > key.length ? max : key;
                 const pad = format(this.mutablePropertyList.reduce(longest, ``)).length;
                 return this.mutablePropertyList.map(({ key, value, descr }, index) => {
-                    const expand = format(new Target(
+                    const expanded = format(new Target(
                         value, key, path.concat(keyStr(key)), indent.next(opts)
                     ), opts, expObj);
-                    const hasNewline = expand.includes(`\n`);
+                    const hasNewline = expanded.includes(`\n`);
                     const access = format(key).padEnd(hasNewline ? 0 : pad);
-                    const spacer = index < this.mutablePropertyList.length - 1 && hasNewline ? current : ``;
-                    return `${access} = ${expand}${formatDescriptor(descr, opts)}${spacer}`;
+                    const spacer = hasNewline && index < this.mutablePropertyList.length - 1 ? current : ``;
+                    return `${access} = ${expanded}${formatDescriptor(descr, opts)}${spacer}`;
+                }).join(current);
+            }
+        },
+        GroupIterator: class extends GroupBase {
+            #iterable = false;
+            predicate({ key, value }) {
+                return key === Symbol.iterator && typeof value === `function`;
+            }
+            push(_) {
+                this.#iterable = true;
+            }
+            get verify() {
+                return this.#iterable;
+            }
+            get expand() {
+                const tag = formatCustom(`iterator`, opts.header);
+                const str = this.formatter();
+                return `${prepend}${tag}${current}${str}${current}`;
+            }
+            formatter() {
+                return [
+                    { access: formatSymbol(Symbol.iterator, opts), value: receiver[Symbol.iterator] },
+                    { access: formatCustom(`this[Symbol.iterator]()`, opts), value: receiver[Symbol.iterator]() },
+                ].map(({ access, value }) => {
+                    const expanded = format(new Target(
+                        value, access, path.concat(access), indent.next(opts)
+                    ), opts, expObj);
+                    return `${access} = ${expanded}`;
                 }).join(current);
             }
         },
         GroupPrototype: class extends GroupBase {
-            verify() {
+            get verify() {
                 return !opts.ptype.format.ignore;
             }
-            expand() {
+            get expand() {
                 const objPtype = Object.getPrototypeOf(data);
                 const strPtype = formatCustom(objPtype, opts.ptype);
                 const indPtype = indent.with(-1, opts.ptype);
                 const origin = keyStr(name);
                 const access = formatCustom(`getPrototypeOf( ${origin} )`, opts);
-                const expand = format(new Target(
+                const expanded = format(new Target(
                     objPtype, `${origin}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
                 ), opts, expObj);
-                return `${indPtype.resolve.current}${access} = ${expand}${current}`;
+                return `${indPtype.resolve.current}${access} = ${expanded}${current}`;
             }
         },
     };
@@ -344,11 +373,11 @@ export function formatArray(target, options, expObj) {
     const formatItem = (item, indexed) => format(new Target(
         item, indexed, path.concat(indexed), newline ? indent.next(opts) : indent
     ), opts, expObj);
-    const expand = !arr.length ? `` : arr.map(
+    const expanded = !arr.length ? `` : arr.map(
         (item, index) => prefix + formatItem(item, `${name}[${index}]`)
     ).join(`,`) + append;
     const origin = formatCustom(target.pathResolve(), opts.origin);
-    return `(${arr.length})${formatCustom(expand, opts)}${origin}`;
+    return `(${arr.length})${formatCustom(expanded, opts)}${origin}`;
 }
 export function formatIterable(target, options, expObj) {
     const { data } = target;
