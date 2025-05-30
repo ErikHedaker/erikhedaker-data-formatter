@@ -3,8 +3,10 @@ export const knownSymbols = Reflect.ownKeys(Symbol).map(
     key => Symbol[key]
 ).filter(value => typeof value === `symbol`);
 export const defaults = {
-    newlineLimitArray: 40,
     newlineLimitGroup: 40,
+    newlineLimitArray: 40,
+    minimizeSameTypeArray: true,
+    originProperty: true,
     format: {
         prefix: `[`,
         suffix: `]`,
@@ -161,6 +163,7 @@ export function formatObject(target, options, expObj = new Map()) {
     const { data, name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set // add array and iterable keys into Set, filter keys based on that
+    const length = keys.length;
     const ptype = Object.getPrototypeOf(data);
     const ptypeRef = expObj.get(ptype);
     const objRef = expObj.get(data);
@@ -172,10 +175,10 @@ export function formatObject(target, options, expObj = new Map()) {
     const copyOf = paths => () => (paths.push(path), formatCopyOf(paths));
     const formatEarlyReturn = [
         [filtered, isExcluded(data)],
-        [filtered, isExcluded(ptype) && !keys.length],
+        [filtered, isExcluded(ptype) && !length],
         [copyOf(objRef), Boolean(objRef)],
-        [copyOf(ptypeRef), Boolean(ptypeRef) && !keys.length],
-        [() => formatArray(target, opts, expObj), isArrayOnly(receiver, keys)],
+        [copyOf(ptypeRef), Boolean(ptypeRef) && !length],
+        [() => formatArray(target, opts, expObj), isArrayOnly(receiver, length)],
     ].find(([, predicate]) => predicate)?.[0];
     if (Boolean(formatEarlyReturn)) {
         return formatEarlyReturn();
@@ -224,12 +227,12 @@ export function formatObject(target, options, expObj = new Map()) {
     const expanded = groups.filter(group => group.verify).map(group => group.expand).join(``);
     const [prepend, append, origin] = !expanded.includes(`\n`) ? [``, ``, ``] :
         [current, previous, formatCustom(data === receiver ? target.pathResolve() : name, opts.origin)];
-    return `(${keys.length})${formatCustom(prepend + expanded + append, opts.object)}${origin}`;
+    return `(${length})${formatCustom(prepend + expanded + append, opts.object)}${origin}`;
 }
 export function createObjectGroups(setup, target, options, expObj) {
     const opts = optionsNormalize(options);
     const { data, name, path, indent, receiver } = target;
-    const { current } = indent.resolve;
+    const { current, previous } = indent.resolve;
     const prepend = indent.with(-1, opts.header).resolve.current;
     class GroupBase {
         push(_) {
@@ -332,6 +335,20 @@ export function createObjectGroups(setup, target, options, expObj) {
             formatter() {
                 const size = receiver.size ?? receiver.length ?? 20;
                 const iter = receiver[Symbol.iterator]();
+                const prtypeChain = arg => isObj(arg) ? [arg].concat(prtypeChain(Object.getPrototypeOf(arg))) : [];
+                const iterType = `${formatCustom(iter, opts.type)}.${prtypeChain(
+                    Object.getPrototypeOf(iter)
+                ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}`;
+                const accessed = formatSymbol(Symbol.iterator, opts);
+                const unrolled = Array.from(iter.take(size));
+                const values = format(new Target(
+                    unrolled, accessed, path.concat(accessed), indent.next(opts)
+                ), { ...opts, originProperty: false }, expObj); // opts: skip origin, add nested element types
+                const expanded = format(new Target(
+                    receiver[Symbol.iterator], accessed, path.concat(accessed), indent.next(opts)
+                ), opts, expObj);
+                return `${accessed} = ${expanded}${current}| -> invoked-type-chain( ${iterType} )${current}| -> Iterator.take(${size}) = ${values}`;
+                /*
                 return [
                     { access: formatSymbol(Symbol.iterator, opts), value: receiver[Symbol.iterator] },
                     { access: formatCustom(`this[Symbol.iterator]()`, opts), value: receiver[Symbol.iterator]() },
@@ -341,6 +358,7 @@ export function createObjectGroups(setup, target, options, expObj) {
                     ), opts, expObj);
                     return `${access} = ${expanded}`;
                 }).join(current);
+                */
             }
         },
     };
@@ -351,17 +369,19 @@ export function formatArray(target, options, expObj) {
     const { name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const arr = Array.from(receiver);
+    const firstType = dataType(arr[0]);
+    const isSameType = arr.every(item => dataType(item) === firstType);
     const newline = arr.length < opts.newlineLimitArray;
-    const prefix = newline ? current : ` `;
-    const append = newline ? `,${previous}` : ` `;
+    const [prefix, append] = !newline ? [` `, ` `] : [current, `,${previous}`];
     const formatItem = (item, indexed) => format(new Target(
         item, indexed, path.concat(indexed), newline ? indent.next(opts) : indent
     ), opts, expObj);
     const expanded = !arr.length ? `` : arr.map(
         (item, index) => prefix + formatItem(item, `${name}[${index}]`)
     ).join(`,`) + append;
-    const origin = formatCustom(target.pathResolve(), opts.origin);
-    return `(${arr.length})${formatCustom(expanded, opts)}${origin}`;
+    const origin = !opts.originProperty ? `` : formatCustom(target.pathResolve(), opts.origin);
+    const itemType = !isSameType ? `` : `${firstType}: `;
+    return `(${itemType}${arr.length})${formatCustom(expanded, opts)}${origin}`;
 }
 export function formatArrayLike() {
     return null; // array item name to array[index]
@@ -395,11 +415,11 @@ export function formatCustom(arg, { format: {
 export function dataType(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
 }
-export function isArrayOnly(arg, keys) {
-    return arg instanceof Array && isArrayMinimal(arg, keys);
+export function isArrayOnly(arg, length) {
+    return arg instanceof Array && isArrayMinimal(arg, length);
 }
-export function isArrayMinimal(arg, keys) {
-    return isArrayLike(arg) && arg.length === (keys?.length ?? Reflect.ownKeys(arg).length) - 1;
+export function isArrayMinimal(arg, length) {
+    return isArrayLike(arg) && arg.length === (length ?? Reflect.ownKeys(arg).length) - 1;
 }
 export function isArrayLike(arg) {
     return isObj(arg) && Number.isInteger(arg.length) && arg.length >= 0;
