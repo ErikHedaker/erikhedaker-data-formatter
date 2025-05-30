@@ -42,12 +42,12 @@ export const defaults = {
     },
     header: {
         format: {
-            prefix: `# `,
+            prefix: `\\ `,
             suffix: ``,
         },
         indent: {
             base: `|`,
-            fill: `=`,
+            fill: `¨`,
             size: 8,
         },
     },
@@ -315,6 +315,21 @@ export function createObjectGroups(setup, target, options, expObj) {
                 }).join(current);
             }
         },
+        GroupPrototype: class extends GroupBase {
+            get verify() {
+                return !opts.ptype.format.ignore;
+            }
+            get expand() {
+                const objPtype = Object.getPrototypeOf(data);
+                const strPtype = formatCustom(objPtype, opts.ptype);
+                const indPtype = indent.with(-1, opts.ptype);
+                const access = formatCustom(`__proto__`, opts);
+                const expanded = format(new Target(
+                    objPtype, `${keyStr(name)}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
+                ), opts, expObj);
+                return `${indPtype.resolve.current}${access} = ${expanded}${current}`;
+            }
+        },
         GroupIterator: class extends GroupBase {
             #iterable = false;
             predicate({ key, value }) {
@@ -332,6 +347,8 @@ export function createObjectGroups(setup, target, options, expObj) {
                 return `${prepend}${tag}${current}${str}${current}`;
             }
             formatter() {
+                const size = receiver.size ?? receiver.length ?? 20;
+                const iter = receiver[Symbol.iterator]();
                 return [
                     { access: formatSymbol(Symbol.iterator, opts), value: receiver[Symbol.iterator] },
                     { access: formatCustom(`this[Symbol.iterator]()`, opts), value: receiver[Symbol.iterator]() },
@@ -341,22 +358,6 @@ export function createObjectGroups(setup, target, options, expObj) {
                     ), opts, expObj);
                     return `${access} = ${expanded}`;
                 }).join(current);
-            }
-        },
-        GroupPrototype: class extends GroupBase {
-            get verify() {
-                return !opts.ptype.format.ignore;
-            }
-            get expand() {
-                const objPtype = Object.getPrototypeOf(data);
-                const strPtype = formatCustom(objPtype, opts.ptype);
-                const indPtype = indent.with(-1, opts.ptype);
-                const origin = keyStr(name);
-                const access = formatCustom(`getPrototypeOf( ${origin} )`, opts);
-                const expanded = format(new Target(
-                    objPtype, `${origin}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
-                ), opts, expObj);
-                return `${indPtype.resolve.current}${access} = ${expanded}${current}`;
             }
         },
     };
@@ -378,11 +379,6 @@ export function formatArray(target, options, expObj) {
     ).join(`,`) + append;
     const origin = formatCustom(target.pathResolve(), opts.origin);
     return `(${arr.length})${formatCustom(expanded, opts)}${origin}`;
-}
-export function formatIterable(target, options, expObj) {
-    const { data } = target;
-    const size = parseInt(data.size) || parseInt(data.length) || 20;
-    const iter = data[Symbol.iterator];
 }
 export function formatArrayLike() {
     return null; // array item name to array[index]
