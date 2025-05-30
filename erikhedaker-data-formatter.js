@@ -165,25 +165,20 @@ export function formatObject(target, options, expObj = new Map()) {
     const ptypeRef = expObj.get(ptype);
     const objRef = expObj.get(data);
     const isExcluded = arg => opts.ptype.exclude.some(obj => obj === arg);
-    const formatCopyOf = arr => (
+    const filtered = () => formatCustom(`is-filtered`, opts.object);
+    const formatCopyOf = ([path]) => (
         str => formatCustom(current + str + previous, opts.object)
-    )(`is-copy-of-( ${arr[0].join(`.`) } )`);
-    if (isExcluded(data)) {
-        return formatCustom(`is-filtered`, opts.object)
-    }
-    if (isExcluded(ptype) && !keys.length) {
-        return formatCustom(`is-filtered`, opts.object)
-    }
-    if (Boolean(objRef)) {
-        objRef.push(path);
-        return formatCopyOf(objRef);
-    }
-    if (Boolean(ptypeRef) && !keys.length) {
-        ptypeRef.push(path);
-        return formatCopyOf(ptypeRef);
-    }
-    if (isArrayOnly(receiver, keys)) {
-        return formatArray(target, opts, expObj);
+    )(`is-copy-of-( ${path.join(`.`)} )`);
+    const copyOf = paths => () => (paths.push(path), formatCopyOf(paths));
+    const formatEarlyReturn = [
+        [filtered, isExcluded(data)],
+        [filtered, isExcluded(ptype) && !keys.length],
+        [copyOf(objRef), Boolean(objRef)],
+        [copyOf(ptypeRef), Boolean(ptypeRef) && !keys.length],
+        [() => formatArray(target, opts, expObj), isArrayOnly(receiver, keys)],
+    ].find(([, predicate]) => predicate)?.[0];
+    if (Boolean(formatEarlyReturn)) {
+        return formatEarlyReturn();
     }
     const isArrayItem = (isParentArray =>
         ([key]) => isParentArray && parseInt(String(key)) >= 0
