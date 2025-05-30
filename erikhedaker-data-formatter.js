@@ -136,56 +136,23 @@ export function format(arg, options, expObj) {
     const target = Target.normalize(arg);
     const { data } = target;
     const type = formatCustom(data, opts.type);
-    const filtered = formatFiltered(target, opts, expObj);
     const dispatch = [
         //iterable
         //asynciterable (await with timeout)
         //Promise (.then)
         //toJSON
         //HTMLAllCollection
-        [`filtered`, Boolean(filtered)],
         [`null`, data === null],
         [`date`, data instanceof Date],
         [`error`, data instanceof Error],
     ].find(([, predicate]) => predicate)?.[0] ?? typeof data;
     const expanded = ({
-        filtered: () => filtered,
         function: () => formatCustom(data.name, opts),
         string: () => formatCustom(`"${data}"`, opts),
         symbol: () => formatSymbol(data, opts),
         object: () => formatObject(target, opts, expObj),
     })[dispatch]?.() ?? formatCustom(String(data), opts);
     return type + expanded;
-}
-export function formatFiltered(target, options, expObj) { // move back to formatObject
-    const opts = optionsNormalize(options);
-    const { data, path, indent } = target;
-    if (isObj(data) && Boolean(expObj)) {
-        const { current, previous } = indent.resolve;
-        const formatFilter = (prefix, suffix) => str => `{${prefix}${str}${suffix}}`;
-        const formatOutput = formatFilter(current, previous);
-        const formatSingle = formatFilter(``, ``);
-        const isExcluded = arg => opts.ptype.exclude.some(obj => obj === arg);
-        const objEmpty = Reflect.ownKeys(data).length === 0;
-        const objPtype = Object.getPrototypeOf(data);
-        const expValue = expObj.get(data);
-        const expPtype = expObj.get(objPtype);
-        if (isExcluded(data)) {
-            return formatSingle(`is-filtered`);
-        }
-        if (isExcluded(objPtype) && objEmpty) {
-            return formatSingle(`is-filtered`);
-        }
-        if (Boolean(expValue)) {
-            expValue.push(path);
-            return formatOutput(`is-copy-of-( ${expValue[0].join(`.`)} )`);
-        }
-        if (Boolean(expPtype) && objEmpty) {
-            expPtype.push(path);
-            return formatOutput(`is-copy-of-( ${expPtype[0].join(`.`)} )`);
-        }
-    }
-    return null;
 }
 export function formatObject(target, options, expObj = new Map()) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
@@ -194,6 +161,27 @@ export function formatObject(target, options, expObj = new Map()) {
     const { data, name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set // add array and iterable keys into Set, filter keys based on that
+    const ptype = Object.getPrototypeOf(data);
+    const ptypeRef = expObj.get(ptype);
+    const objRef = expObj.get(data);
+    const isExcluded = arg => opts.ptype.exclude.some(obj => obj === arg);
+    const formatCopyOf = arr => (
+        str => formatCustom(current + str + previous, opts.object)
+    )(`is-copy-of-( ${arr[0].join(`.`) } )`);
+    if (isExcluded(data)) {
+        return formatCustom(`is-filtered`, opts.object)
+    }
+    if (isExcluded(ptype) && !keys.length) {
+        return formatCustom(`is-filtered`, opts.object)
+    }
+    if (Boolean(objRef)) {
+        objRef.push(path);
+        return formatCopyOf(objRef);
+    }
+    if (Boolean(ptypeRef) && !keys.length) {
+        ptypeRef.push(path);
+        return formatCopyOf(ptypeRef);
+    }
     if (isArrayOnly(receiver, keys)) {
         return formatArray(target, opts, expObj);
     }
