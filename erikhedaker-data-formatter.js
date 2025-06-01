@@ -89,30 +89,39 @@ export const defaults = {
         },
     },
 };
-export const optionsWithType = {
-    ...defaults, type: {
-        ...defaults.type, format: {
-            ...defaults.type.format,
-            ignore: false,
-        },
-    },
-};
-const optionsMemoized = new Set([defaults, optionsWithType]);
-const mergeShallow = (src, obj) => ({ ...src, ...obj }); // deep merge function
-export function visitedMutate(arg, visited) {
-    if (isObj(arg)) {
-        if (visited.has(arg)) {
-            throw `[Problem for future me]`;
+//export const optionsWithType = { type: { format: { ignore: false } } };
+const normalized = new Set([defaults]);
+export function optionsNormalize(arg) {
+    if (normalized.has(arg)) {
+        return arg;
+    }
+    const merge = deepMerge(defaults, arg);
+    normalized.add(merge);
+    return merge;
+}
+export function isPrototype(arg) {
+    return isObj(arg) && arg === arg.constructor.prototype;
+}
+export function visit(arg, refs) {
+    if (isObj(arg) && !isPrototype(arg)) {
+        if (refs.has(arg)) {
+            throw `[Problem for current me]`;
         }
-        visited.add(arg);
+        refs.add(arg);
     }
 }
-export function deepCopy(arg, visited = new Set()) { // array-like, iterable
+export function deepCopy(arg, refs = new Set()) {
+    if (isPrototype(arg)) {
+        return arg;
+    }
     if (isArrayLike(arg)) {
-        return Array.from(arg, item => deepCopy(item, visited));
+        return Array.from(arg, item => deepCopy(item, refs));
+    }
+    if (isIterable(arg)) {
+        return arg; // shallow copy things like Map
     }
     if (isObj(arg)) {
-        visitedMutate(arg, visited);
+        visit(arg, refs);
         const copy = {};
         const keys = Reflect.ownKeys(arg);
         for (const key of keys) {
@@ -122,31 +131,39 @@ export function deepCopy(arg, visited = new Set()) { // array-like, iterable
     }
     return arg;
 }
-export function deepMerge(baseline, override, visited = new Set()) {
-    const copy = {};
-    visitedMutate(baseline, visited);
-    visitedMutate(override, visited);
-    if (isObj(override) && isObj(baseline)) {
-        const both = new Set([
+export function deepMerge(baseline, override, visited = new Map()) {
+    const copy = {}; // add shallow copy rule
+    if (!visited.has(baseline)) {
+        visited.set(baseline, new Set());
+    }
+    if (!visited.has(override)) {
+        visited.set(override, new Set());
+    }
+    visit(baseline, visited.get(baseline));
+    visit(override, visited.get(override));
+    if (isPrototype(override)) {
+        return override;
+    } else if (isObj(override) && isObj(baseline) && !isPrototype(baseline)) {
+        const both = new Set([ // Add logic for merging two arrays and output one Array
             ...Reflect.ownKeys(baseline),
             ...Reflect.ownKeys(override),
         ]);
         for (const key of both) {
             copy[key] = key in override
                 ? deepMerge(baseline[key], override[key], visited)
-                : deepCopy(baseline[key], visited);
+                : deepCopy(baseline[key], visited.get(baseline));
         }
         return copy;
     } else if (isObj(override)) {
         const keys = Reflect.ownKeys(override);
         for (const key of keys) {
-            copy[key] = deepCopy(override[key], visited);
+            copy[key] = deepCopy(override[key], visited.get(override));
         }
         return copy;
-    } else if (override === undefined && isObj(baseline)) {
+    } else if (override === undefined && isObj(baseline) && !isPrototype(baseline)) {
         const keys = Reflect.ownKeys(baseline);
         for (const key of keys) {
-            copy[key] = deepCopy(baseline[key], visited);
+            copy[key] = deepCopy(baseline[key], visited.get(baseline));
         }
         return copy;
     } else if (override === undefined) {
@@ -155,11 +172,8 @@ export function deepMerge(baseline, override, visited = new Set()) {
         return override;
     }
 }
-export function optionsNormalize(arg) {
-    return optionsMemoized.has(arg) ? arg : mergeShallow(defaults, arg);
-}
 export function log(...args) {
-    logCustom(optionsWithType, ...args);
+    logCustom({ type: { format: { ignore: false } } }, ...args);
 }
 export function logCustom(options, ...args) {
     const opts = optionsNormalize(options);
@@ -391,19 +405,21 @@ export function createObjectGroups(setup, target, options, expObj) {
             formatter() {
                 const size = receiver.size ?? receiver.length ?? 20;
                 const iter = receiver[Symbol.iterator]();
+                const indentIterator = indent.next(opts);
+                const next = indentIterator.resolve.current;
                 const prtypeChain = arg => isObj(arg) ? [arg].concat(prtypeChain(Object.getPrototypeOf(arg))) : [];
                 const iterType = `${formatCustom(iter, opts.type)}.${prtypeChain(
                     Object.getPrototypeOf(iter)
                 ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}`;
                 const accessed = formatSymbol(Symbol.iterator, opts);
                 const unrolled = Array.from(iter.take(size));
-                const values = format(new Target(
+                const values = format(new Target( // opts: skip origin, add nested element types
                     unrolled, accessed, path.concat(accessed), indent.next(opts)
-                ), { ...opts, originProperty: false }, expObj); // opts: skip origin, add nested element types
+                ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
                 const expanded = format(new Target(
-                    receiver[Symbol.iterator], accessed, path.concat(accessed), indent.next(opts)
+                    receiver[Symbol.iterator], accessed, path.concat(accessed), indentIterator
                 ), opts, expObj);
-                return `${accessed} = ${expanded}${current}| -> invoked-type-chain( ${iterType} )${current}| -> Iterator.take(${size}) = ${values}`;
+                return `${accessed} = ${expanded} -> invoked-type-chain(${next}${iterType}${current}).take(${size}) = ${values}`;
                 /*
                 return [
                     { access: formatSymbol(Symbol.iterator, opts), value: receiver[Symbol.iterator] },
