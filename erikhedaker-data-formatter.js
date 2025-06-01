@@ -89,7 +89,7 @@ export const defaults = {
         },
     },
 };
-const optionsWithType = {
+export const optionsWithType = {
     ...defaults, type: {
         ...defaults.type, format: {
             ...defaults.type.format,
@@ -99,6 +99,62 @@ const optionsWithType = {
 };
 const optionsMemoized = new Set([defaults, optionsWithType]);
 const mergeShallow = (src, obj) => ({ ...src, ...obj }); // deep merge function
+export function visitedMutate(arg, visited) {
+    if (isObj(arg)) {
+        if (visited.has(arg)) {
+            throw `[Problem for future me]`;
+        }
+        visited.add(arg);
+    }
+}
+export function deepCopy(arg, visited = new Set()) { // array-like, iterable
+    if (isArrayLike(arg)) {
+        return Array.from(arg, item => deepCopy(item, visited));
+    }
+    if (isObj(arg)) {
+        visitedMutate(arg, visited);
+        const copy = {};
+        const keys = Reflect.ownKeys(arg);
+        for (const key of keys) {
+            copy[key] = deepCopy(arg[key]);
+        }
+        return copy;
+    }
+    return arg;
+}
+export function deepMerge(baseline, override, visited = new Set()) {
+    const copy = {};
+    visitedMutate(baseline, visited);
+    visitedMutate(override, visited);
+    if (isObj(override) && isObj(baseline)) {
+        const both = new Set([
+            ...Reflect.ownKeys(baseline),
+            ...Reflect.ownKeys(override),
+        ]);
+        for (const key of both) {
+            copy[key] = key in override
+                ? deepMerge(baseline[key], override[key], visited)
+                : deepCopy(baseline[key], visited);
+        }
+        return copy;
+    } else if (isObj(override)) {
+        const keys = Reflect.ownKeys(override);
+        for (const key of keys) {
+            copy[key] = deepCopy(override[key], visited);
+        }
+        return copy;
+    } else if (override === undefined && isObj(baseline)) {
+        const keys = Reflect.ownKeys(baseline);
+        for (const key of keys) {
+            copy[key] = deepCopy(baseline[key], visited);
+        }
+        return copy;
+    } else if (override === undefined) {
+        return baseline;
+    } else {
+        return override;
+    }
+}
 export function optionsNormalize(arg) {
     return optionsMemoized.has(arg) ? arg : mergeShallow(defaults, arg);
 }
@@ -416,7 +472,7 @@ export function dataType(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
 }
 export function isArrayOnly(arg, length) {
-    return arg instanceof Array && isArrayMinimal(arg, length);
+    return Array.isArray(arg) && isArrayMinimal(arg, length);
 }
 export function isArrayMinimal(arg, length) {
     return isArrayLike(arg) && arg.length === (length ?? Reflect.ownKeys(arg).length) - 1;
