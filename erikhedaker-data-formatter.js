@@ -211,19 +211,11 @@ export function logCustom(options, ...args) {
     // make objDone to Map, filter all entries above 1, print last
 }
 export function format(arg, options, expObj) {
-    /*
-        // _iterable: x => use Iterator.prototype.take, spread iterator,
-        // create object with resulting array and receiver object and pass to formatObj
-        // add function newline (newline low amount of function)
-        // add function invocation
-        // add date object output
-    */
     const opts = optionsNormalize(options); // move to formatObject
     const target = Target.normalize(arg);
     const { data } = target;
     const type = formatCustom(data, opts.type);
     const dispatch = [
-        //iterable
         //asynciterable (await with timeout)
         //Promise (.then)
         //toJSON
@@ -346,10 +338,10 @@ export function createObjectGroups(setup, target, options, expObj) {
             return this.mutablePropertyList.length > 0;
         }
         get expand() {
-            const tag = formatCustom(this.header, opts.header);
-            const num = this.mutablePropertyList.length;
-            const str = this.formatter();
-            return `${prepend}${tag}(${num})${current}${str}${current}`;
+            const tagged = formatCustom(this.header, opts.header);
+            const length = this.mutablePropertyList.length;
+            const output = this.formatter();
+            return `${prepend}${tagged}(${length})${current}${output}${current}`;
         }
         formatter() {
             return ``;
@@ -373,15 +365,15 @@ export function createObjectGroups(setup, target, options, expObj) {
             }
             formatter() {
                 const longest = (max, { key }) => max.length > key.length ? max : key;
-                const pad = format(this.mutablePropertyList.reduce(longest, ``)).length;
+                const padding = format(this.mutablePropertyList.reduce(longest, ``)).length;
                 return this.mutablePropertyList.map(({ key, value, descr }, index) => {
                     const expanded = format(new Target(
                         value, key, path.concat(keyStr(key)), indent.next(opts)
                     ), opts, expObj);
                     const hasNewline = expanded.includes(`\n`);
-                    const access = format(key).padEnd(hasNewline ? 0 : pad);
+                    const accessed = format(key).padEnd(hasNewline ? 0 : padding);
                     const spacer = hasNewline && index < this.mutablePropertyList.length - 1 ? current : ``;
-                    return `${access} = ${expanded}${formatDescriptor(descr, opts)}${spacer}`;
+                    return `${accessed} = ${expanded}${formatDescriptor(descr, opts)}${spacer}`;
                 }).join(current);
             }
         },
@@ -393,11 +385,11 @@ export function createObjectGroups(setup, target, options, expObj) {
                 const objPtype = Object.getPrototypeOf(data);
                 const strPtype = formatCustom(objPtype, opts.ptype);
                 const indPtype = indent.with(-1, opts.ptype);
-                const access = formatCustom(`__proto__`, opts);
+                const accessed = formatCustom(`__proto__`, opts);
                 const expanded = format(new Target(
                     objPtype, `${keyStr(name)}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
                 ), opts, expObj);
-                return `${indPtype.resolve.current}${access} = ${expanded}${current}`;
+                return `${indPtype.resolve.current}${accessed} = ${expanded}${current}`;
             }
         },
         GroupIterator: class extends GroupBase {
@@ -412,28 +404,30 @@ export function createObjectGroups(setup, target, options, expObj) {
                 return this.#iterable;
             }
             get expand() {
-                const tag = formatCustom(`iterator`, opts.header);
-                const str = this.formatter();
-                return `${prepend}${tag}${current}${str}${current}`;
+                const tagged = formatCustom(`iterator`, opts.header);
+                const output = this.formatter();
+                return `${prepend}${tagged}${current}${output}${current}`;
             }
             formatter() {
                 const size = receiver.size ?? receiver.length ?? 20;
                 const iter = receiver[Symbol.iterator]();
-                const next = indent.next(opts); // remove indent.base
-                const proto = arg => isObj(arg) && arg !== Object.prototype
-                    ? [arg].concat(proto(Object.getPrototypeOf(arg))) : [];
+                const next = indent.next(opts);
+                const prtypeObj = arg => isObj(arg) && arg !== Object.prototype ? [arg].concat(
+                    prtypeObj(Object.getPrototypeOf(arg))
+                ) : [];
                 const accessed = formatSymbol(Symbol.iterator, opts);
                 const expanded = format(new Target(
                     receiver[Symbol.iterator], accessed, path.concat(accessed), next
                 ), opts, expObj);
-                const values = format(new Target( // opts: skip origin, add nested element types
+                const entries = format(new Target( // opts: skip origin, add nested element types
                     Array.from(iter.take(size)), accessed, path.concat(accessed), next
                 ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
-                const type = `${formatCustom(iter, opts.type)}.${proto(
-                    Object.getPrototypeOf(iter)
-                ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}`;
-                const invoked = formatCustom(`invoked-( ${type} )`, opts);
-                return `${accessed} = ${expanded} ->${current}${invoked} = ${values}`;
+                const type = formatCustom(iter, opts.type);
+                const prtypes = prtypeObj(Object.getPrototypeOf(iter)).map(
+                    obj => formatCustom(obj, opts.ptype)
+                ).join(`.`);
+                const invoked = formatCustom(`invoked-( ${type}.${prtypes} )`, opts);
+                return `${accessed} = ${expanded} ->${current}${invoked} = ${entries}`;
             }
         },
     };
