@@ -45,7 +45,7 @@ export const defaults = {
             size: 8,
         },
     },
-    ptype: {
+    prtype: {
         format: {
             modify: dataType,
             prefix: `[[`,
@@ -240,10 +240,10 @@ export function formatObject(target, options, expObj = new Map()) {
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set // add array and iterable keys into Set, filter keys based on that
     const length = keys.length;
-    const ptype = Object.getPrototypeOf(data);
-    const ptypeRef = expObj.get(ptype);
+    const prtype = Object.getPrototypeOf(data);
+    const prtypeRef = expObj.get(prtype);
     const objRef = expObj.get(data);
-    const isExcluded = arg => opts.ptype.exclude.some(obj => obj === arg);
+    const isExcluded = arg => opts.prtype.exclude.some(obj => obj === arg);
     const filtered = () => formatCustom(`is-filtered`, opts.object);
     const formatCopyOf = ([path]) => (
         str => formatCustom(current + str + previous, opts.object)
@@ -251,9 +251,9 @@ export function formatObject(target, options, expObj = new Map()) {
     const copyOf = paths => () => (paths.push(path), formatCopyOf(paths));
     const formatEarlyReturn = [
         [filtered, isExcluded(data)],
-        [filtered, isExcluded(ptype) && !length],
+        [filtered, isExcluded(prtype) && !length],
         [copyOf(objRef), Boolean(objRef)],
-        [copyOf(ptypeRef), Boolean(ptypeRef) && !length],
+        [copyOf(prtypeRef), Boolean(prtypeRef) && !length],
         [() => formatArray(target, opts, expObj), isArrayOnly(receiver, length)],
     ].find(([, predicate]) => predicate)?.[0];
     if (Boolean(formatEarlyReturn)) {
@@ -301,9 +301,12 @@ export function formatObject(target, options, expObj = new Map()) {
         );
     }).forEach(property => selectGroup(property).push(property));
     const expanded = groups.filter(group => group.verify).map(group => group.expand).join(``);
-    const [prepend, append, origin] = !expanded.includes(`\n`) ? [``, ``, ``] :
-        [current, previous, formatCustom(data === receiver ? target.pathResolve() : name, opts.origin)];
-    return `(${length})${formatCustom(prepend + expanded + append, opts.object)}${origin}`;
+    const [origin, prefix, suffix] = !expanded.includes(`\n`) ? [``, ``, ``] : [formatCustom(
+        data === receiver ? target.pathResolve() : name,
+        opts.origin,
+    ), current, previous];
+    const output = formatCustom(prefix + expanded + suffix, opts.object);
+    return `(${length})${output}${origin}`;
 }
 export function createObjectGroups(setup, target, options, expObj) {
     const opts = optionsNormalize(options);
@@ -379,17 +382,17 @@ export function createObjectGroups(setup, target, options, expObj) {
         },
         GroupPrototype: class extends GroupBase {
             get verify() {
-                return !opts.ptype.format.ignore;
+                return !opts.prtype.format.ignore;
             }
             get expand() {
-                const objPtype = Object.getPrototypeOf(data);
-                const strPtype = formatCustom(objPtype, opts.ptype);
-                const indPtype = indent.with(-1, opts.ptype);
+                const objPrtype = Object.getPrototypeOf(data);
+                const strPrtype = formatCustom(objPrtype, opts.prtype);
+                const indPrtype = indent.with(-1, opts.prtype);
                 const accessed = formatCustom(`__proto__`, opts);
                 const expanded = format(new Target(
-                    objPtype, `${keyStr(name)}.${strPtype}`, path.concat(strPtype), indPtype.next(opts), receiver
+                    objPrtype, `${keyStr(name)}.${strPrtype}`, path.concat(strPrtype), indPrtype.next(opts), receiver
                 ), opts, expObj);
-                return `${indPtype.resolve.current}${accessed} = ${expanded}${current}`;
+                return `${indPrtype.resolve.current}${accessed} = ${expanded}${current}`;
             }
         },
         GroupIterator: class extends GroupBase {
@@ -424,7 +427,7 @@ export function createObjectGroups(setup, target, options, expObj) {
                 ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
                 const type = formatCustom(iter, opts.type);
                 const prtypes = prtypeObj(Object.getPrototypeOf(iter)).map(
-                    obj => formatCustom(obj, opts.ptype)
+                    obj => formatCustom(obj, opts.prtype)
                 ).join(`.`);
                 const invoked = formatCustom(`invoked-( ${type}.${prtypes} )`, opts);
                 return `${accessed} = ${expanded} ->${current}${invoked} = ${entries}`;
