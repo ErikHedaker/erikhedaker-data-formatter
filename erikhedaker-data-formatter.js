@@ -419,31 +419,21 @@ export function createObjectGroups(setup, target, options, expObj) {
             formatter() {
                 const size = receiver.size ?? receiver.length ?? 20;
                 const iter = receiver[Symbol.iterator]();
-                const next = indent.next(opts.empty); // remove indent.base
-                const prtypeChain = arg => isObj(arg) ? [arg].concat(prtypeChain(Object.getPrototypeOf(arg))) : [];
-                const type = `${next.resolve.current}${formatCustom(iter, opts.type)}.${prtypeChain(
-                    Object.getPrototypeOf(iter)
-                ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}${current}`;
+                const next = indent.next(opts); // remove indent.base
+                const proto = arg => isObj(arg) && arg !== Object.prototype
+                    ? [arg].concat(proto(Object.getPrototypeOf(arg))) : [];
                 const accessed = formatSymbol(Symbol.iterator, opts);
-                const unrolled = Array.from(iter.take(size));
-                const values = format(new Target( // opts: skip origin, add nested element types
-                    unrolled, accessed, path.concat(accessed), indent.next(opts)
-                ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
                 const expanded = format(new Target(
                     receiver[Symbol.iterator], accessed, path.concat(accessed), next
                 ), opts, expObj);
-                return `${accessed} = ${expanded} -> invoked-type-chain-(${type}) = ${values}`;
-                /*
-                return [
-                    { access: formatSymbol(Symbol.iterator, opts), value: receiver[Symbol.iterator] },
-                    { access: formatCustom(`this[Symbol.iterator]()`, opts), value: receiver[Symbol.iterator]() },
-                ].map(({ access, value }) => {
-                    const expanded = format(new Target(
-                        value, access, path.concat(access), indent.next(opts)
-                    ), opts, expObj);
-                    return `${access} = ${expanded}`;
-                }).join(current);
-                */
+                const values = format(new Target( // opts: skip origin, add nested element types
+                    Array.from(iter.take(size)), accessed, path.concat(accessed), next
+                ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
+                const type = `${formatCustom(iter, opts.type)}.${proto(
+                    Object.getPrototypeOf(iter)
+                ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}`;
+                const invoked = formatCustom(`invoked-( ${type} )`, opts);
+                return `${accessed} = ${expanded} ->${current}${invoked} = ${values}`;
             }
         },
     };
