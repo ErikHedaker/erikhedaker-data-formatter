@@ -16,14 +16,6 @@ export const defaults = {
         fill: ` `,
         size: 8,
     },
-    type: {
-        format: {
-            ignore: true,
-            modify: dataType,
-            prefix: `<`,
-            suffix: `>`,
-        },
-    },
     object: {
         format: {
             prefix: `{`,
@@ -69,6 +61,21 @@ export const defaults = {
             Array.prototype,
             Iterator.prototype,
         ],
+    },
+    type: {
+        format: {
+            ignore: true,
+            modify: dataType,
+            prefix: `<`,
+            suffix: `>`,
+        },
+    },
+    empty: {
+        indent: {
+            base: ` `,
+            fill: ` `,
+            size: 4,
+        },
     },
     invokeAsync: {
         enabled: true,
@@ -309,7 +316,7 @@ export function formatObject(target, options, expObj = new Map()) {
 export function createObjectGroups(setup, target, options, expObj) {
     const opts = optionsNormalize(options);
     const { data, name, path, indent, receiver } = target;
-    const { current, previous } = indent.resolve;
+    const { current } = indent.resolve;
     const prepend = indent.with(-1, opts.header).resolve.current;
     class GroupBase {
         push(_) {
@@ -412,21 +419,20 @@ export function createObjectGroups(setup, target, options, expObj) {
             formatter() {
                 const size = receiver.size ?? receiver.length ?? 20;
                 const iter = receiver[Symbol.iterator]();
-                const indentIterator = indent.next(opts); // remove indent.base
-                const next = indentIterator.resolve.current;
+                const next = indent.next(opts.empty); // remove indent.base
                 const prtypeChain = arg => isObj(arg) ? [arg].concat(prtypeChain(Object.getPrototypeOf(arg))) : [];
-                const iterType = `${formatCustom(iter, opts.type)}.${prtypeChain(
+                const type = `${next.resolve.current}${formatCustom(iter, opts.type)}.${prtypeChain(
                     Object.getPrototypeOf(iter)
-                ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}`;
+                ).map(obj => formatCustom(obj, opts.ptype)).join(`.`)}${current}`;
                 const accessed = formatSymbol(Symbol.iterator, opts);
                 const unrolled = Array.from(iter.take(size));
                 const values = format(new Target( // opts: skip origin, add nested element types
                     unrolled, accessed, path.concat(accessed), indent.next(opts)
                 ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
                 const expanded = format(new Target(
-                    receiver[Symbol.iterator], accessed, path.concat(accessed), indentIterator
+                    receiver[Symbol.iterator], accessed, path.concat(accessed), next
                 ), opts, expObj);
-                return `${accessed} = ${expanded} -> invoked-type-chain(${next}${iterType}${current}).take(${size}) = ${values}`;
+                return `${accessed} = ${expanded} -> invoked-type-chain-(${type}) = ${values}`;
                 /*
                 return [
                     { access: formatSymbol(Symbol.iterator, opts), value: receiver[Symbol.iterator] },
