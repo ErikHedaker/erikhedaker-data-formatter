@@ -89,15 +89,17 @@ export const defaults = {
         },
     },
 };
-//export const optionsWithType = { type: { format: { ignore: false } } };
 const normalized = new Set([defaults]);
 export function optionsNormalize(arg) {
+    if (!isObj(arg)) {
+        return defaults;
+    }
     if (normalized.has(arg)) {
         return arg;
     }
-    const merge = deepMerge(defaults, arg);
-    normalized.add(merge);
-    return merge;
+    const opts = deepMerge(defaults, arg); // add "known" deepMerge that only merge existing defaults keys
+    normalized.add(opts);
+    return opts;
 }
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
@@ -127,12 +129,14 @@ export function deepCopy(arg, refs = new Set()) {
         for (const key of keys) {
             copy[key] = deepCopy(arg[key]);
         }
-        return copy;
+        return copy; // return Reflect.ownKeys(arg).reduce
     }
     return arg;
 }
 export function deepMerge(baseline, override, visited = new Map()) {
     const copy = {}; // add shallow copy rule
+    // pass fn closure of "visit" with visited Map instead of object, init if nullish
+    // const mutate = Boolean(visited) ? visited : (map => obj => ...)(new Map())
     if (!visited.has(baseline)) {
         visited.set(baseline, new Set());
     }
@@ -143,7 +147,8 @@ export function deepMerge(baseline, override, visited = new Map()) {
     visit(override, visited.get(override));
     if (isPrototype(override)) {
         return override;
-    } else if (isObj(override) && isObj(baseline) && !isPrototype(baseline)) {
+    }
+    if (isObj(override) && isObj(baseline) && !isPrototype(baseline)) {
         const both = new Set([ // Add logic for merging two arrays and output one Array
             ...Reflect.ownKeys(baseline),
             ...Reflect.ownKeys(override),
@@ -154,23 +159,25 @@ export function deepMerge(baseline, override, visited = new Map()) {
                 : deepCopy(baseline[key], visited.get(baseline));
         }
         return copy;
-    } else if (isObj(override)) {
+    }
+    if (isObj(override)) {
         const keys = Reflect.ownKeys(override);
         for (const key of keys) {
             copy[key] = deepCopy(override[key], visited.get(override));
         }
         return copy;
-    } else if (override === undefined && isObj(baseline) && !isPrototype(baseline)) {
+    }
+    if (override === undefined && isObj(baseline) && !isPrototype(baseline)) {
         const keys = Reflect.ownKeys(baseline);
         for (const key of keys) {
             copy[key] = deepCopy(baseline[key], visited.get(baseline));
         }
         return copy;
-    } else if (override === undefined) {
-        return baseline;
-    } else {
-        return override;
     }
+    if (override === undefined) {
+        return baseline;
+    }
+    return override;
 }
 export function log(...args) {
     logCustom({ type: { format: { ignore: false } } }, ...args);
@@ -204,7 +211,7 @@ export function format(arg, options, expObj) {
         // add function invocation
         // add date object output
     */
-    const opts = optionsNormalize(options);
+    const opts = optionsNormalize(options); // move to formatObject
     const target = Target.normalize(arg);
     const { data } = target;
     const type = formatCustom(data, opts.type);
@@ -405,7 +412,7 @@ export function createObjectGroups(setup, target, options, expObj) {
             formatter() {
                 const size = receiver.size ?? receiver.length ?? 20;
                 const iter = receiver[Symbol.iterator]();
-                const indentIterator = indent.next(opts);
+                const indentIterator = indent.next(opts); // remove indent.base
                 const next = indentIterator.resolve.current;
                 const prtypeChain = arg => isObj(arg) ? [arg].concat(prtypeChain(Object.getPrototypeOf(arg))) : [];
                 const iterType = `${formatCustom(iter, opts.type)}.${prtypeChain(
