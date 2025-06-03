@@ -170,18 +170,10 @@ export function deepMerge(secondary, primary, visits) {
         return copy;
     }
     if (isObj(primary)) {
-        const keys = Reflect.ownKeys(primary);
-        for (const key of keys) {
-            copy[key] = deepCopy(primary[key], abomination.primary);
-        }
-        return copy;
+        return transformCopy(primary, obj => deepCopy(obj, abomination.primary));
     }
     if (primary === undefined && isObj(secondary) && !isPrototype(secondary)) {
-        const keys = Reflect.ownKeys(secondary);
-        for (const key of keys) {
-            copy[key] = deepCopy(secondary[key], abomination.secondary);
-        }
-        return copy;
+        return transformCopy(secondary, obj => deepCopy(obj, abomination.secondary));
     }
     if (primary === undefined) {
         return secondary;
