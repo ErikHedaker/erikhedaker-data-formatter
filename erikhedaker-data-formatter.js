@@ -111,26 +111,18 @@ export function optionsNormalize(arg) {
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function visit(arg, refs) {
-    if (isObj(arg) && !isPrototype(arg)) {
-        if (refs.has(arg)) {
-            throw `[Problem for current me]`;
-        }
-        refs.add(arg);
-    }
-}
-export function deepCopy(arg, refs = new Set()) {
+export function deepCopy(arg, abom) {
     if (isPrototype(arg)) {
         return arg;
     }
     if (isArrayLike(arg)) {
-        return Array.from(arg, item => deepCopy(item, refs));
+        return Array.from(arg, item => deepCopy(item, abom));
     }
     if (isIterable(arg)) {
         return arg; // shallow copy things like Map
     }
     if (isObj(arg)) {
-        visit(arg, refs);
+        abom(arg);
         const copy = {};
         const keys = Reflect.ownKeys(arg);
         for (const key of keys) {
@@ -140,55 +132,58 @@ export function deepCopy(arg, refs = new Set()) {
     }
     return arg;
 }
-export function deepMerge(baseline, override, visited = new Map()) {
-    const copy = {}; // add shallow copy rule
-    // pass fn closure of "visit" with visited Map instead of object, init if nullish
-    // const mutate = Boolean(visited) ? visited : (map => obj => ...)(new Map())
-    if (!visited.has(baseline)) {
-        visited.set(baseline, new Set());
+export function deepMerge(secondary, primary, visited) {
+    const abomination = Boolean(visited) ? visited : (fn => ({
+        primary: fn(new Set()),
+        secondary: fn(new Set()),
+    }))(set => key => {
+        if (isObj(key) && !isPrototype(key)) {
+            if (set.has(key)) {
+                throw `[insert-circular-reference-solution-here]`;
+            }
+            set.add(key);
+        }
+    });
+    abomination.primary(primary);
+    abomination.secondary(secondary);
+    const copy = {};
+    if (isPrototype(primary)) {
+        return primary;
     }
-    if (!visited.has(override)) {
-        visited.set(override, new Set());
-    }
-    visit(baseline, visited.get(baseline));
-    visit(override, visited.get(override));
-    if (isPrototype(override)) {
-        return override;
-    }
-    if (isArrayOnly(override) && isArrayOnly(baseline)) {
-        const shallow = override.concat(baseline.slice(override.length));
+    if (isArrayOnly(primary) && isArrayOnly(secondary)) {
+        const shallow = primary.concat(secondary.slice(primary.length));
         return Array.from(shallow, item => deepCopy(item));
     }
-    if (isObj(override) && isObj(baseline) && !isPrototype(baseline)) {
+    if (isObj(primary) && isObj(secondary) && !isPrototype(secondary)) {
         const both = new Set([ // Add logic for merging two arrays and output one Array
-            ...Reflect.ownKeys(baseline),
-            ...Reflect.ownKeys(override),
+            ...Reflect.ownKeys(secondary),
+            ...Reflect.ownKeys(primary),
         ]);
         for (const key of both) {
-            copy[key] = key in override
-                ? deepMerge(baseline[key], override[key], visited)
-                : deepCopy(baseline[key], visited.get(baseline));
+            copy[key] = key in primary
+                ? deepMerge(secondary[key], primary[key], abomination)
+                : deepCopy(secondary[key], abomination.secondary);
         }
         return copy;
     }
-    if (isObj(override)) {
-        const keys = Reflect.ownKeys(override);
+    if (isObj(primary)) {
+        const keys = Reflect.ownKeys(primary);
         for (const key of keys) {
-            copy[key] = deepCopy(override[key], visited.get(override));
+            copy[key] = deepCopy(primary[key], abomination.primary);
         }
         return copy;
     }
-    if (override === undefined && isObj(baseline) && !isPrototype(baseline)) {
-        const keys = Reflect.ownKeys(baseline);
+    if (primary === undefined && isObj(secondary) && !isPrototype(secondary)) {
+        const keys = Reflect.ownKeys(secondary);
         for (const key of keys) {
-            copy[key] = deepCopy(baseline[key], visited.get(baseline));
+            copy[key] = deepCopy(secondary[key], abomination.secondary);
         }
         return copy;
     }
-    if (override === undefined) {
-        return baseline;
+    if (primary === undefined) {
+        return secondary;
     }
-    return override;
+    return primary;
 }
 export function log(...args) {
     logCustom({ type: { format: { ignore: false } } }, ...args);
