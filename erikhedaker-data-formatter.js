@@ -155,6 +155,10 @@ export function deepMerge(baseline, override, visited = new Map()) {
     if (isPrototype(override)) {
         return override;
     }
+    if (isArrayOnly(override) && isArrayOnly(baseline)) {
+        const shallow = override.concat(baseline.slice(override.length));
+        return Array.from(shallow, item => deepCopy(item));
+    }
     if (isObj(override) && isObj(baseline) && !isPrototype(baseline)) {
         const both = new Set([ // Add logic for merging two arrays and output one Array
             ...Reflect.ownKeys(baseline),
