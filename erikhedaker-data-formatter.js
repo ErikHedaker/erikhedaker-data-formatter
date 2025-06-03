@@ -111,29 +111,31 @@ export function optionsNormalize(arg) {
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function deepCopy(arg, abom) {
+export function transformCopy(obj, transform) {
+    const copy = {};
+    for (const key of Reflect.ownKeys(obj)) {
+        copy[key] = transform(obj[key]);
+    }
+    return copy; // return Reflect.ownKeys(arg).reduce
+}
+export function deepCopy(arg, visit) {
     if (isPrototype(arg)) {
         return arg;
     }
     if (isArrayLike(arg)) {
-        return Array.from(arg, item => deepCopy(item, abom));
+        return Array.from(arg, item => deepCopy(item, visit));
     }
     if (isIterable(arg)) {
         return arg; // shallow copy things like Map
     }
     if (isObj(arg)) {
-        abom(arg);
-        const copy = {};
-        const keys = Reflect.ownKeys(arg);
-        for (const key of keys) {
-            copy[key] = deepCopy(arg[key]);
-        }
-        return copy; // return Reflect.ownKeys(arg).reduce
+        visit(arg);
+        return transformCopy(arg, obj => deepCopy(obj, visit));
     }
     return arg;
 }
-export function deepMerge(secondary, primary, visited) {
-    const abomination = Boolean(visited) ? visited : (fn => ({
+export function deepMerge(secondary, primary, visits) {
+    const abomination = Boolean(visits) ? visits : (fn => ({
         primary: fn(new Set()),
         secondary: fn(new Set()),
     }))(set => key => {
@@ -147,7 +149,8 @@ export function deepMerge(secondary, primary, visited) {
     abomination.primary(primary);
     abomination.secondary(secondary);
     const copy = {};
-    if (isPrototype(primary)) {
+    if (secondary === undefined ||
+        isPrototype(primary)) {
         return primary;
     }
     if (isArrayOnly(primary) && isArrayOnly(secondary)) {
@@ -155,7 +158,7 @@ export function deepMerge(secondary, primary, visited) {
         return Array.from(shallow, item => deepCopy(item));
     }
     if (isObj(primary) && isObj(secondary) && !isPrototype(secondary)) {
-        const both = new Set([ // Add logic for merging two arrays and output one Array
+        const both = new Set([
             ...Reflect.ownKeys(secondary),
             ...Reflect.ownKeys(primary),
         ]);
