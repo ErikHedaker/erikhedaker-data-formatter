@@ -111,7 +111,7 @@ export function optionsNormalize(arg) {
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function transformCopy(obj, transform) {
+export function objCopyTransform(obj, transform) {
     const copy = {};
     for (const key of Reflect.ownKeys(obj)) {
         copy[key] = transform(obj[key]);
@@ -130,7 +130,7 @@ export function deepCopy(arg, visit) {
     }
     if (isObj(arg)) {
         visit(arg);
-        return transformCopy(arg, obj => deepCopy(obj, visit));
+        return objCopyTransform(arg, obj => deepCopy(obj, visit));
     }
     return arg;
 }
@@ -146,39 +146,32 @@ export function deepMerge(secondary, primary, visits) {
             set.add(key);
         }
     });
+    if (primary === undefined) {
+        return deepCopy(secondary, abomination.secondary);
+    }
+    if (isPrototype(primary) || isPrototype(secondary) || !isObj(primary) || !isObj(secondary)) {
+        return deepCopy(primary, abomination.primary);
+    }
     abomination.primary(primary);
     abomination.secondary(secondary);
+    if (isArrayOnly(primary)) {
+        const append = isArrayOnly(secondary) ? secondary.slice(primary.length) : [];
+        return Array.from(
+            primary.concat(append),
+            item => deepCopy(item, abomination.primary),
+        );
+    }
+    const both = new Set([
+        ...Reflect.ownKeys(secondary),
+        ...Reflect.ownKeys(primary),
+    ]);
     const copy = {};
-    if (secondary === undefined ||
-        isPrototype(primary)) {
-        return primary;
+    for (const key of both) {
+        copy[key] = key in primary
+            ? deepMerge(secondary[key], primary[key], abomination)
+            : deepCopy(secondary[key], abomination.secondary);
     }
-    if (isArrayOnly(primary) && isArrayOnly(secondary)) {
-        const shallow = primary.concat(secondary.slice(primary.length));
-        return Array.from(shallow, item => deepCopy(item));
-    }
-    if (isObj(primary) && isObj(secondary) && !isPrototype(secondary)) {
-        const both = new Set([
-            ...Reflect.ownKeys(secondary),
-            ...Reflect.ownKeys(primary),
-        ]);
-        for (const key of both) {
-            copy[key] = key in primary
-                ? deepMerge(secondary[key], primary[key], abomination)
-                : deepCopy(secondary[key], abomination.secondary);
-        }
-        return copy;
-    }
-    if (isObj(primary)) {
-        return transformCopy(primary, obj => deepCopy(obj, abomination.primary));
-    }
-    if (primary === undefined && isObj(secondary) && !isPrototype(secondary)) {
-        return transformCopy(secondary, obj => deepCopy(obj, abomination.secondary));
-    }
-    if (primary === undefined) {
-        return secondary;
-    }
-    return primary;
+    return copy;
 }
 export function log(...args) {
     logCustom({ type: { format: { ignore: false } } }, ...args);
