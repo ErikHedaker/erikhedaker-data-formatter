@@ -111,13 +111,6 @@ export function optionsNormalize(arg) {
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function objCopyTransform(obj, transform) {
-    const copy = {};
-    for (const key of Reflect.ownKeys(obj)) {
-        copy[key] = transform(obj[key]);
-    }
-    return copy; // return Reflect.ownKeys(arg).reduce
-}
 export function deepCopy(arg, visit) {
     if (isPrototype(arg) || !isObj(arg) || arg == null) {
         return arg;
