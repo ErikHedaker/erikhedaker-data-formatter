@@ -119,32 +119,31 @@ export function objCopyTransform(obj, transform) {
     return copy; // return Reflect.ownKeys(arg).reduce
 }
 export function deepCopy(arg, visit) {
-    if (isPrototype(arg)) {
+    if (isPrototype(arg) || !isObj(arg) || arg == null) {
         return arg;
     }
-    if (isArrayLike(arg)) {
+    if (isIterable(arg)) {
+        return arg; // shallow copy for iterable like Map, fix later
+    }
+    if (isArrayOnly(arg)) {
         return Array.from(arg, item => deepCopy(item, visit));
     }
-    if (isIterable(arg)) {
-        return arg; // shallow copy things like Map
+    visit(arg);
+    const copy = {};
+    for (const key of Reflect.ownKeys(arg)) {
+        copy[key] = deepCopy(arg[key], visit);
     }
-    if (isObj(arg)) {
-        visit(arg);
-        return objCopyTransform(arg, obj => deepCopy(obj, visit));
-    }
-    return arg;
+    return copy; // return Reflect.ownKeys(arg).reduce
 }
 export function deepMerge(secondary, primary, visits) {
     const abomination = Boolean(visits) ? visits : (fn => ({
         primary: fn(new Set()),
         secondary: fn(new Set()),
     }))(set => key => {
-        if (isObj(key) && !isPrototype(key)) {
-            if (set.has(key)) {
-                throw `[insert-circular-reference-solution-here]`;
-            }
-            set.add(key);
+        if (set.has(key)) {
+            throw `[insert-circular-reference-solution-here]`;
         }
+        set.add(key);
     });
     if (primary === undefined) {
         return deepCopy(secondary, abomination.secondary);
