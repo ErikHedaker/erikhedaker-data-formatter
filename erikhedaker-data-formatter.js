@@ -134,32 +134,27 @@ export function deepMergeCopy(main, fallback, visits) {
     if (isPrototype(fallback)) {
         return deepMergeCopy(main, undefined, visit);
     }
-    if (isArrayOnly(main)) {
-        const append = isArrayOnly(fallback) ? fallback.slice(main.length) : [];
-        return Array.from(
-            main.concat(append),
-            item => deepMergeCopy(item, undefined, visit),
-        ); // merge items if both are objects with same index
+    if (isArrayOnly(main)) { // merge items if both are objects with same index
+        return main.concat(
+            isArrayOnly(fallback) ? fallback.slice(main.length) : []
+        ).map(item => deepMergeCopy(item, undefined, visit));
     }
     if (!isObj(fallback)) {
         if (isIterable(main)) {
             return main; // shallow copy for iterable like Map, fix later
         }
-        const copy = {};
-        for (const key of Reflect.ownKeys(main)) {
+        return Reflect.ownKeys(main).reduce((copy, key) => {
             copy[key] = deepMergeCopy(main[key], undefined, visit);
-        }
-        return copy; // return Reflect.ownKeys(arg).reduce
+            return copy;
+        }, {});
     }
-    const both = new Set([
+    return Array.from(new Set([
         ...Reflect.ownKeys(fallback),
         ...Reflect.ownKeys(main),
-    ]);
-    const copy = {};
-    for (const key of both) {
+    ])).reduce((copy, key) => {
         copy[key] = deepMergeCopy(main[key], fallback[key], visit);
-    }
-    return copy;
+        return copy;
+    }, {});
 }
 export function log(...args) {
     logCustom({ type: { format: { ignore: false } } }, ...args);
