@@ -104,64 +104,60 @@ export function optionsNormalize(arg) {
     if (normalized.has(arg)) {
         return arg;
     }
-    const opts = deepMerge(arg, defaults); // add "known" deepMerge that only merge existing defaults keys
+    const opts = deepMergeCopy(arg, defaults); // add "known" deepMerge that only merge existing defaults keys
     normalized.add(opts);
     return opts;
 }
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function deepCopy(arg, visit) {
-    if (isPrototype(arg) || !isObj(arg) || arg == null) {
-        return arg;
-    }
-    if (isIterable(arg)) {
-        return arg; // shallow copy for iterable like Map, fix later
-    }
-    if (isArrayOnly(arg)) {
-        return Array.from(arg, item => deepCopy(item, visit));
-    }
-    visit(arg);
-    const copy = {};
-    for (const key of Reflect.ownKeys(arg)) {
-        copy[key] = deepCopy(arg[key], visit);
-    }
-    return copy; // return Reflect.ownKeys(arg).reduce
-}
-export function deepMerge(primary, secondary, visits) {
-    const abomination = Boolean(visits) ? visits : (fn => ({
-        primary: fn(new Set()),
-        secondary: fn(new Set()),
+export function deepMergeCopy(main, fallback, visits) {
+    const visit = Boolean(visits) ? visits : (fn => ({
+        main: fn(new Set()),
+        fallback: fn(new Set()),
     }))(set => key => {
-        if (set.has(key)) {
-            throw `[insert-circular-reference-solution-here]`;
+        if (isObj(key) && !isPrototype(key)) {
+            if (set.has(key)) {
+                throw `[insert-circular-reference-solution-here]`;
+            }
+            set.add(key);
         }
-        set.add(key);
     });
-    if (primary === undefined) {
-        return deepCopy(secondary, abomination.secondary);
+    visit.main(main);
+    visit.fallback(fallback);
+    if (main === undefined) {
+        return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, visit);
     }
-    if (isPrototype(primary) || isPrototype(secondary) || !isObj(primary) || !isObj(secondary)) {
-        return deepCopy(primary, abomination.primary);
+    if (!isObj(main) || isPrototype(main)) {
+        return main;
     }
-    abomination.primary(primary);
-    abomination.secondary(secondary);
-    if (isArrayOnly(primary)) {
-        const append = isArrayOnly(secondary) ? secondary.slice(primary.length) : [];
+    if (isPrototype(fallback)) {
+        return deepMergeCopy(main, undefined, visit);
+    }
+    if (isArrayOnly(main)) {
+        const append = isArrayOnly(fallback) ? fallback.slice(main.length) : [];
         return Array.from(
-            primary.concat(append),
-            item => deepCopy(item, abomination.primary),
-        );
+            main.concat(append),
+            item => deepMergeCopy(item, undefined, visit),
+        ); // merge items if both are objects with same index
+    }
+    if (!isObj(fallback)) {
+        if (isIterable(main)) {
+            return main; // shallow copy for iterable like Map, fix later
+        }
+        const copy = {};
+        for (const key of Reflect.ownKeys(main)) {
+            copy[key] = deepMergeCopy(main[key], undefined, visit);
+        }
+        return copy; // return Reflect.ownKeys(arg).reduce
     }
     const both = new Set([
-        ...Reflect.ownKeys(secondary),
-        ...Reflect.ownKeys(primary),
+        ...Reflect.ownKeys(fallback),
+        ...Reflect.ownKeys(main),
     ]);
     const copy = {};
     for (const key of both) {
-        copy[key] = key in primary
-            ? deepMerge(primary[key], secondary[key], abomination)
-            : deepCopy(secondary[key], abomination.secondary);
+        copy[key] = deepMergeCopy(main[key], fallback[key], visit);
     }
     return copy;
 }
