@@ -143,18 +143,16 @@ export function deepMergeCopy(main, fallback, visits) {
         if (isIterable(main)) {
             return main; // shallow copy for iterable like Map, fix later
         }
-        return Reflect.ownKeys(main).reduce((copy, key) => {
-            copy[key] = deepMergeCopy(main[key], undefined, visit);
-            return copy;
-        }, {});
+        return Reflect.ownKeys(main).reduce((copy, key) => (
+            copy[key] = deepMergeCopy(main[key], undefined, visit), copy
+        ), {});
     }
     return Array.from(new Set([
-        ...Reflect.ownKeys(fallback),
         ...Reflect.ownKeys(main),
-    ])).reduce((copy, key) => {
-        copy[key] = deepMergeCopy(main[key], fallback[key], visit);
-        return copy;
-    }, {});
+        ...Reflect.ownKeys(fallback),
+    ])).reduce((copy, key) => (
+        copy[key] = deepMergeCopy(main[key], fallback[key], visit), copy
+    ), {});
 }
 export function log(...args) {
     logCustom({ type: { format: { ignore: false } } }, ...args);
