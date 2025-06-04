@@ -104,7 +104,7 @@ export function optionsNormalize(arg) {
     if (normalized.has(arg)) {
         return arg;
     }
-    const opts = deepMerge(defaults, arg); // add "known" deepMerge that only merge existing defaults keys
+    const opts = deepMerge(arg, defaults); // add "known" deepMerge that only merge existing defaults keys
     normalized.add(opts);
     return opts;
 }
@@ -128,7 +128,7 @@ export function deepCopy(arg, visit) {
     }
     return copy; // return Reflect.ownKeys(arg).reduce
 }
-export function deepMerge(secondary, primary, visits) {
+export function deepMerge(primary, secondary, visits) {
     const abomination = Boolean(visits) ? visits : (fn => ({
         primary: fn(new Set()),
         secondary: fn(new Set()),
@@ -160,7 +160,7 @@ export function deepMerge(secondary, primary, visits) {
     const copy = {};
     for (const key of both) {
         copy[key] = key in primary
-            ? deepMerge(secondary[key], primary[key], abomination)
+            ? deepMerge(primary[key], secondary[key], abomination)
             : deepCopy(secondary[key], abomination.secondary);
     }
     return copy;
