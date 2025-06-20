@@ -111,47 +111,47 @@ export function optionsNormalize(arg) {
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function deepMergeCopy(main, fallback, visits) {
-    const visit = Boolean(visits) ? visits : (fn => ({
-        main: fn(new Set()),
-        fallback: fn(new Set()),
+export function deepMergeCopy(main, fallback, verifier) {
+    const verify = Boolean(verifier) ? verifier : (closure => ({
+        main: closure(new Set()),
+        fallback: closure(new Set()),
     }))(set => key => {
-        if (isObj(key) && !isPrototype(key)) {
+        if (isObj(key)) {
             if (set.has(key)) {
                 throw `[insert-circular-reference-solution-here]`;
             }
             set.add(key);
         }
     });
-    visit.main(main);
-    visit.fallback(fallback);
     if (main === undefined) {
-        return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, visit);
+        return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, verify);
     }
     if (!isObj(main) || isPrototype(main)) {
         return main;
     }
     if (isPrototype(fallback)) {
-        return deepMergeCopy(main, undefined, visit);
+        return deepMergeCopy(main, undefined, verify);
     }
+    verify.main(main);
+    verify.fallback(fallback);
     if (isArrayOnly(main)) { // merge items if both are objects with same index
         return main.concat(
             isArrayOnly(fallback) ? fallback.slice(main.length) : []
-        ).map(item => deepMergeCopy(item, undefined, visit));
+        ).map(item => deepMergeCopy(item, undefined, verify));
     }
     if (!isObj(fallback)) {
         if (isIterable(main)) {
             return main; // shallow copy for iterable like Map, fix later
         }
         return Reflect.ownKeys(main).reduce((copy, key) => (
-            copy[key] = deepMergeCopy(main[key], undefined, visit), copy
+            copy[key] = deepMergeCopy(main[key], undefined, verify), copy
         ), {});
     }
     return Array.from(new Set([
         ...Reflect.ownKeys(main),
         ...Reflect.ownKeys(fallback),
     ])).reduce((copy, key) => (
-        copy[key] = deepMergeCopy(main[key], fallback[key], visit), copy
+        copy[key] = deepMergeCopy(main[key], fallback[key], verify), copy
     ), {});
 }
 export function log(...args) {
