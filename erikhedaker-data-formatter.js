@@ -1,4 +1,5 @@
 'use strict';
+const cyclicRefDict = new Map();
 export const knownSymbols = Reflect.ownKeys(Symbol).map(
     key => Symbol[key]
 ).filter(value => typeof value === `symbol`);
@@ -47,7 +48,7 @@ export const defaults = { // existing object blocklist
     },
     prtype: {
         format: {
-            modify: dataType,
+            modify: dataTypeStr,
             prefix: `[[`,
             suffix: `]]`,
         },
@@ -65,7 +66,7 @@ export const defaults = { // existing object blocklist
     type: {
         format: {
             ignore: true,
-            modify: dataType,
+            modify: dataTypeStr,
             prefix: `<`,
             suffix: `>`,
         },
@@ -97,7 +98,7 @@ export const defaults = { // existing object blocklist
     },
 };
 const normalized = new Set([defaults]);
-export function optionsNormalize(arg) {
+export function normalizeOptions(arg) {
     if (!isObj(arg)) {
         return defaults;
     }
@@ -154,32 +155,39 @@ export function deepMergeCopy(priority, fallback, verifier) {
         (copy[key] = deepMergeCopy(priority[key], fallback[key], verify)), copy
     ), {});
 }
-export function log(...args) {
-    logCustom({ type: { format: { ignore: false } } }, ...args);
+export const format = precomputeFormat();
+function precomputeFormat() {
+    const extractTypeSelector = precomputeDispatchTable([
+        [(target) => target.data === null, () => `null`],
+        [(target) => target.data instanceof Date, () => `date`],
+        [(target) => target.data instanceof Error, () => `error`],
+    ], (target) => typeof target.data);
+    const extractFormatter = precomputeDispatchTable([
+        [(str) => str === `function`, (target, opts) => formatCustom(target.data.name, opts)],
+        [(str) => str === `string`, (target, opts) => formatCustom(`"${target.data}"`, opts)],
+        [(str) => str === `symbol`, (target, opts) => formatSymbol(target.data, opts)],
+        [(str) => str === `object`, (target, opts) => formatObject(target, opts)],
+    ], (target, opts) => formatCustom(String(target.data), opts));
+    return (arg, options) => {
+        const opts = normalizeOptions(options);
+        const target = Target.normalize(arg);
+        const selector = extractTypeSelector(target)(target);
+        const expanded = extractFormatter(selector)(target, opts);
+        const type = formatCustom(target.data, opts.type);
+        return type + expanded;
+    };
 }
-export function logCustom(options, ...args) {
-    const opts = optionsNormalize(options);
-    const header = `[${new URL(import.meta.url).pathname.slice(1)}]`;
-    const spacer = `\n\n${`-`.repeat(31)}\n\n`;
-    const indent = new Indentation();
-    const expObj = new Map();
-    const output = args.map((arg, num) => {
-        try {
-            const keys = isObj(arg) ? Reflect.ownKeys(arg) : [];
-            const captured = keys.length === 1 && dataType(arg) === `Object`;
-            const [name, data] = captured ? [keys[0], arg[keys[0]]] : [formatCustom(arg, opts.type), arg];
-            const prepend = captured ? `${format(name)} = ` : ``;
-            const expanded = format(new Target(data, name, [name], indent.next(opts)), opts, expObj);
-            return `${spacer}[${num}]: ${prepend}${expanded}`;
-        } catch (error) {
-            return `${spacer}[${num}]: ${format(error)}`;
-        }
-    }).join(``);
-    console.log(header + output);
-    // make objDone to Map, filter all entries above 1, print last
-}
-export function format(arg, options, expObj) {
-    const opts = optionsNormalize(options); // move to formatObject
+function precomputeDispatchTable(pairs, fallback = () => undefined) {
+    const field = ([predicate, extractor]) => ({ predicate, extractor });
+    const table = pairs.map(field);
+    return (arg) => {
+        const truthy = ({ predicate }) => predicate(arg);
+        return table.find(truthy)?.extractor ?? fallback;
+    };
+};
+/*
+export function formatOLD(arg, options, cyclicRefDict) {
+    const opts = normalizeOptions(options); // move to formatObject
     const target = Target.normalize(arg);
     const { data } = target;
     const type = formatCustom(data, opts.type);
@@ -196,21 +204,22 @@ export function format(arg, options, expObj) {
         function: () => formatCustom(data.name, opts),
         string: () => formatCustom(`"${data}"`, opts),
         symbol: () => formatSymbol(data, opts),
-        object: () => formatObject(target, opts, expObj),
+        object: () => formatObject(target, opts, cyclicRefDict),
     })[dispatch]?.() ?? formatCustom(String(data), opts);
     return type + expanded;
 }
-export function formatObject(target, options, expObj = new Map()) {
+*/
+export function formatObject(target, options) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
-    const opts = optionsNormalize(options);
+    const opts = normalizeOptions(options);
     const { data, name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const keys = Reflect.ownKeys(data); // Set // add array and iterable keys into Set, filter keys based on that
     const length = keys.length;
     const prtype = Object.getPrototypeOf(data);
-    const prtypeRef = expObj.get(prtype);
-    const objRef = expObj.get(data);
+    const prtypeRef = cyclicRefDict.get(prtype);
+    const objRef = cyclicRefDict.get(data);
     const isExcluded = arg => opts.prtype.exclude.some(obj => obj === arg);
     const filtered = () => formatCustom(`is-filtered`, opts.object);
     const formatCopyOf = ([path]) => ( // better name
@@ -222,7 +231,7 @@ export function formatObject(target, options, expObj = new Map()) {
         [filtered, isExcluded(prtype) && !length],
         [copyOf(objRef), Boolean(objRef)],
         [copyOf(prtypeRef), Boolean(prtypeRef) && !length],
-        [() => formatArray(target, opts, expObj), isArrayOnly(receiver, length)],
+        [() => formatArray(target, opts), isArrayOnly(receiver, length)],
     ].find(([, predicate]) => predicate)?.[0];
     if (Boolean(formatEarlyReturn)) {
         return formatEarlyReturn();
@@ -240,12 +249,12 @@ export function formatObject(target, options, expObj = new Map()) {
         [`GroupPropertyKey`, `null`, ({ value }) => value === null],
         [`GroupPropertyKey`, `undefined`, ({ value }) => value === undefined],
         [`GroupPrototype`],
-    ], target, options, expObj);
+    ], target, options);
     const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
     const selectGroup = (fallback => property => groups.find(
         group => group.predicate(property)
     ) ?? fallback)(groups[0]);
-    expObj.set(data, [path]);
+    cyclicRefDict.set(data, [path]);
     keys.map(key => {
         try {
             return {
@@ -270,8 +279,8 @@ export function formatObject(target, options, expObj = new Map()) {
     const output = formatCustom(prefix + expanded + suffix, opts.object);
     return `(${length})${output}${origin}`;
 }
-export function createObjectGroups(setup, target, options, expObj) {
-    const opts = optionsNormalize(options);
+export function createObjectGroups(setup, target, options) {
+    const opts = normalizeOptions(options);
     const { data, name, path, indent, receiver } = target;
     const { current } = indent.resolve;
     const prepend = indent.with(-1, opts.header).resolve.current;
@@ -334,7 +343,7 @@ export function createObjectGroups(setup, target, options, expObj) {
                 return this.mutablePropertyList.map(({ key, value, descr }, index) => {
                     const expanded = format(new Target(
                         value, key, path.concat(keyStr(key)), indent.next(opts)
-                    ), opts, expObj);
+                    ), opts);
                     const hasNewline = expanded.includes(`\n`);
                     const accessed = format(key).padEnd(hasNewline ? 0 : padding);
                     const spacer = hasNewline && index < this.mutablePropertyList.length - 1 ? current : ``;
@@ -353,7 +362,7 @@ export function createObjectGroups(setup, target, options, expObj) {
                 const accessed = formatCustom(`__proto__`, opts);
                 const expanded = format(new Target(
                     objPrtype, `${keyStr(name)}.${strPrtype}`, path.concat(strPrtype), indPrtype.next(opts), receiver
-                ), opts, expObj);
+                ), opts);
                 return `${indPrtype.resolve.current}${accessed} = ${expanded}${current}`;
             }
         },
@@ -383,10 +392,10 @@ export function createObjectGroups(setup, target, options, expObj) {
                 const accessed = formatSymbol(Symbol.iterator, opts);
                 const expanded = format(new Target(
                     receiver[Symbol.iterator], accessed, path.concat(accessed), next
-                ), opts, expObj);
+                ), opts, cyclicRefDict);
                 const entries = format(new Target( // opts: skip origin, add nested element types
                     Array.from(iter.take(size)), accessed, path.concat(accessed), next
-                ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
+                ), { originProperty: false }, cyclicRefDict); // pass rest of opts after fixing deepMerge Array merge
                 const type = formatCustom(iter, opts.type);
                 const prtypes = prtypeChain(Object.getPrototypeOf(iter)).map(
                     obj => formatCustom(obj, opts.prtype)
@@ -398,18 +407,18 @@ export function createObjectGroups(setup, target, options, expObj) {
     };
     return setup.map(([type, ...args]) => new returnTypes[type](...args));
 }
-export function formatArray(target, options, expObj) {
-    const opts = optionsNormalize(options);
+export function formatArray(target, options, cyclicRefDict) {
+    const opts = normalizeOptions(options);
     const { name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const arr = Array.from(receiver);
-    const firstType = dataType(arr[0]);
-    const isSameType = arr.every(item => dataType(item) === firstType);
+    const firstType = dataTypeStr(arr[0]);
+    const isSameType = arr.every(item => dataTypeStr(item) === firstType);
     const newline = arr.length < opts.newlineLimitArray;
     const [prefix, append] = !newline ? [` `, ` `] : [current, `,${previous}`];
     const formatItem = (item, indexed) => format(new Target(
         item, indexed, path.concat(indexed), newline ? indent.next(opts) : indent
-    ), opts, expObj);
+    ), opts, cyclicRefDict);
     const expanded = !arr.length ? `` : arr.map(
         (item, index) => prefix + formatItem(item, `${name}[${index}]`)
     ).join(`,`) + append;
@@ -446,7 +455,7 @@ export function formatCustom(arg, { format: {
 } } = defaults) {
     return ignore ? `` : `${prefix}${modify?.(arg) ?? arg}${suffix}`;
 }
-export function dataType(arg) {
+export function dataTypeStr(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
 }
 export function isArrayOnly(arg, length) {
@@ -483,7 +492,7 @@ export class Target { // Overhaul to Metadata class / Context / State / Traversa
         this.#receiver = receiver;
     }
     get name() {
-        return this.#name ?? dataType(this.data);
+        return this.#name ?? dataTypeStr(this.data);
     }
     get path() {
         return this.#path ?? [this.name];
@@ -541,4 +550,34 @@ export class Indentation {
     } } = defaults) {
         return base.padEnd(size, fill);
     }
+}
+
+
+// ====================
+//               Logger
+// ====================
+
+export function log(...args) {
+    logCustom({ type: { format: { ignore: false } } }, ...args);
+}
+
+export function logCustom(options, ...args) {
+    const opts = normalizeOptions(options);
+    const header = `[${new URL(import.meta.url).pathname.slice(1)}]`;
+    const spacer = `\n\n${`-`.repeat(31)}\n\n`;
+    const indent = new Indentation();
+    const output = args.map((arg, num) => {
+        try {
+            const keys = isObj(arg) ? Reflect.ownKeys(arg) : [];
+            const captured = keys.length === 1 && dataTypeStr(arg) === `Object`;
+            const [name, data] = captured ? [keys[0], arg[keys[0]]] : [formatCustom(arg, opts.type), arg];
+            const prepend = captured ? `${format(name)} = ` : ``;
+            const expanded = format(new Target(data, name, [name], indent.next(opts)), opts, cyclicRefDict);
+            return `${spacer}[${num}]: ${prepend}${expanded}`;
+        } catch (error) {
+            return `${spacer}[${num}]: ${format(error)}`;
+        }
+    }).join(``);
+    console.log(header + output);
+    // make objDone to Map, filter all entries above 1, print last
 }
