@@ -2,7 +2,7 @@
 export const knownSymbols = Reflect.ownKeys(Symbol).map(
     key => Symbol[key]
 ).filter(value => typeof value === `symbol`);
-export const defaults = {
+export const defaults = { // existing object blocklist
     newlineLimitGroup: 40,
     newlineLimitArray: 40,
     minimizeSameTypeArray: true,
@@ -111,9 +111,9 @@ export function optionsNormalize(arg) {
 export function isPrototype(arg) {
     return isObj(arg) && arg === arg.constructor.prototype;
 }
-export function deepMergeCopy(main, fallback, verifier) {
+export function deepMergeCopy(priority, fallback, verifier) {
     const verify = Boolean(verifier) ? verifier : (closure => ({
-        main: closure(new Set()),
+        priority: closure(new Set()),
         fallback: closure(new Set()),
     }))(set => key => {
         if (isObj(key)) {
@@ -123,35 +123,35 @@ export function deepMergeCopy(main, fallback, verifier) {
             set.add(key);
         }
     });
-    if (main === undefined) {
+    if (priority === undefined) {
         return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, verify);
     }
-    if (!isObj(main) || isPrototype(main)) {
-        return main;
+    if (!isObj(priority) || isPrototype(priority)) {
+        return priority;
     }
     if (isPrototype(fallback)) {
-        return deepMergeCopy(main, undefined, verify);
+        return deepMergeCopy(priority, undefined, verify);
     }
-    verify.main(main);
+    verify.priority(priority);
     verify.fallback(fallback);
-    if (isArrayOnly(main)) { // merge items if both are objects with same index
-        return main.concat(
-            isArrayOnly(fallback) ? fallback.slice(main.length) : []
+    if (isArrayOnly(priority)) { // merge items if both are objects with same index
+        return priority.concat(
+            isArrayOnly(fallback) ? fallback.slice(priority.length) : []
         ).map(item => deepMergeCopy(item, undefined, verify));
     }
     if (!isObj(fallback)) {
-        if (isIterable(main)) {
-            return main; // shallow copy for iterable like Map, fix later
+        if (isIterable(priority)) {
+            return priority; // shallow copy for iterable like Map, fix later
         }
-        return Reflect.ownKeys(main).reduce((copy, key) => (
-            copy[key] = deepMergeCopy(main[key], undefined, verify), copy
+        return Reflect.ownKeys(priority).reduce((copy, key) => ( // cursed syntax btw
+            copy[key] = deepMergeCopy(priority[key], undefined, verify), copy
         ), {});
     }
     return Array.from(new Set([
-        ...Reflect.ownKeys(main),
+        ...Reflect.ownKeys(priority),
         ...Reflect.ownKeys(fallback),
     ])).reduce((copy, key) => (
-        copy[key] = deepMergeCopy(main[key], fallback[key], verify), copy
+        (copy[key] = deepMergeCopy(priority[key], fallback[key], verify)), copy
     ), {});
 }
 export function log(...args) {
@@ -213,10 +213,10 @@ export function formatObject(target, options, expObj = new Map()) {
     const objRef = expObj.get(data);
     const isExcluded = arg => opts.prtype.exclude.some(obj => obj === arg);
     const filtered = () => formatCustom(`is-filtered`, opts.object);
-    const formatCopyOf = ([path]) => (
+    const formatCopyOf = ([path]) => ( // better name
         str => formatCustom(current + str + previous, opts.object)
     )(`is-copy-of-( ${path.join(`.`)} )`);
-    const copyOf = paths => () => (paths.push(path), formatCopyOf(paths));
+    const copyOf = paths => () => (paths.push(path), formatCopyOf(paths)); // better name
     const formatEarlyReturn = [
         [filtered, isExcluded(data)],
         [filtered, isExcluded(prtype) && !length],
@@ -256,18 +256,12 @@ export function formatObject(target, options, expObj = new Map()) {
         } catch (error) {
             return { key, value: error, descr: undefined };
         }
-    }).toSorted((lhs, rhs) => {
-        const keyLHS = lhs.key;
-        const keyRHS = rhs.key;
-        const valueLHS = lhs.value;
-        const valueRHS = rhs.value;
-        return (
-            ternaryCmp(typeof keyLHS, typeof keyRHS) ||
-            ternaryCmp(isObj(valueLHS), isObj(valueRHS)) ||
-            ternaryCmp(typeof valueLHS, typeof valueRHS) ||
-            ternaryCmp(String(keyLHS), String(keyRHS))
-        );
-    }).forEach(property => selectGroup(property).push(property));
+    }).toSorted((lhs, rhs) =>
+        ternaryCmp(typeof lhs.key, typeof rhs.key) ||
+        ternaryCmp(isObj(lhs.value), isObj(rhs.value)) ||
+        ternaryCmp(typeof lhs.value, typeof rhs.value) ||
+        ternaryCmp(String(lhs.key), String(rhs.key))
+    ).forEach(property => selectGroup(property).push(property));
     const expanded = groups.filter(group => group.verify).map(group => group.expand).join(``);
     const [origin, prefix, suffix] = !expanded.includes(`\n`) ? [``, ``, ``] : [formatCustom(
         data === receiver ? target.pathResolve() : name,
@@ -380,11 +374,11 @@ export function createObjectGroups(setup, target, options, expObj) {
                 return `${prepend}${tagged}${current}${output}${current}`;
             }
             formatter() {
-                const size = receiver.size ?? receiver.length ?? 20;
+                const size = receiver.size ?? receiver.length ?? 20; // is integer check
                 const iter = receiver[Symbol.iterator]();
                 const next = indent.next(opts);
-                const prtypeObj = arg => isObj(arg) && arg !== Object.prototype ? [arg].concat(
-                    prtypeObj(Object.getPrototypeOf(arg))
+                const prtypeChain = arg => isObj(arg) && arg !== Object.prototype ? [arg].concat(
+                    prtypeChain(Object.getPrototypeOf(arg))
                 ) : [];
                 const accessed = formatSymbol(Symbol.iterator, opts);
                 const expanded = format(new Target(
@@ -394,7 +388,7 @@ export function createObjectGroups(setup, target, options, expObj) {
                     Array.from(iter.take(size)), accessed, path.concat(accessed), next
                 ), { originProperty: false }, expObj); // pass rest of opts after fixing deepMerge Array merge
                 const type = formatCustom(iter, opts.type);
-                const prtypes = prtypeObj(Object.getPrototypeOf(iter)).map(
+                const prtypes = prtypeChain(Object.getPrototypeOf(iter)).map(
                     obj => formatCustom(obj, opts.prtype)
                 ).join(`.`);
                 const invoked = formatCustom(`invoked-( ${type}.${prtypes} )`, opts);
@@ -431,7 +425,7 @@ export function keyStr(key, options) {
 }
 export function formatSymbol(sym, options) {
     const msg = sym.description;
-    const str = knownSymbols.includes(sym) ? msg : Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`;
+    const str = knownSymbols.includes(sym) ? msg : (Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`);
     return formatCustom(str, options);
 }
 export function formatDescriptor(descr = {}, options) {
