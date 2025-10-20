@@ -1,162 +1,31 @@
 'use strict';
-const cyclicRefDict = new Map();
+
+//-----#
+//-----# Format.Memoization
+//-----#
+
+const defaults = createDefaultOptions();
+
+function formatCustom(arg, { format: {
+    ignore = false,
+    modify = null,
+    prefix = ``,
+    suffix = ``,
+} } = defaults) {
+    return ignore ? `` : `${prefix}${modify?.(arg) ?? arg}${suffix}`;
+}
+
 export const knownSymbols = Reflect.ownKeys(Symbol).map(
     key => Symbol[key]
 ).filter(value => typeof value === `symbol`);
-export const defaults = { // existing object blocklist
-    newlineLimitGroup: 40,
-    newlineLimitArray: 40,
-    minimizeSameTypeArray: true,
-    originProperty: true,
-    format: {
-        prefix: `[`,
-        suffix: `]`,
-    },
-    indent: {
-        base: `|`,
-        fill: ` `,
-        size: 8,
-    },
-    object: {
-        format: {
-            prefix: `{`,
-            suffix: `}`,
-        },
-    },
-    descriptor: {
-        format: {
-            prefix: `'`,
-            suffix: ``,
-        },
-    },
-    origin: {
-        format: {
-            prefix: `( `,
-            suffix: ` )`,
-        },
-    },
-    header: {
-        format: {
-            prefix: `\\ `,
-            suffix: ``,
-        },
-        indent: {
-            base: `|`,
-            fill: `¨`,
-            size: 8,
-        },
-    },
-    prtype: {
-        format: {
-            modify: dataTypeStr,
-            prefix: `[[`,
-            suffix: `]]`,
-        },
-        indent: {
-            base: `|`,
-            fill: `-`,
-            size: 4,
-        },
-        exclude: [
-            Object.prototype,
-            Array.prototype,
-            Iterator.prototype,
-        ],
-    },
-    type: {
-        format: {
-            ignore: true,
-            modify: dataTypeStr,
-            prefix: `<`,
-            suffix: `>`,
-        },
-    },
-    empty: {
-        indent: {
-            base: ` `,
-            fill: ` `,
-            size: 4,
-        },
-    },
-    invokeAsync: {
-        enabled: true,
-        timeout: 10,
-    },
-    invokeFunctions: {
-        enabled: false,
-        safeish: false,
-        unsafer: false,
-        specific: {
-            enabled: false,
-            allowlist: [],
-        },
-        deranged: {
-            enabled: false,
-            blocklist: [],
-            fnArgs: [],
-        },
-    },
-};
-const normalized = new Set([defaults]);
-export function normalizeOptions(arg) {
-    if (!isObj(arg)) {
-        return defaults;
-    }
-    if (normalized.has(arg)) {
-        return arg;
-    }
-    const opts = deepMergeCopy(arg, defaults); // add "known" deepMerge that only merge existing defaults keys
-    normalized.add(opts);
-    return opts;
+
+function formatSymbol(sym, options) {
+    const msg = sym.description;
+    const str = knownSymbols.includes(sym) ? msg : (Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`);
+    return formatCustom(str, options);
 }
-export function isPrototype(arg) {
-    return isObj(arg) && arg === arg.constructor.prototype;
-}
-export function deepMergeCopy(priority, fallback, verifier) {
-    const verify = Boolean(verifier) ? verifier : (closure => ({
-        priority: closure(new Set()),
-        fallback: closure(new Set()),
-    }))(set => key => {
-        if (isObj(key)) {
-            if (set.has(key)) {
-                throw `[insert-circular-reference-solution-here]`;
-            }
-            set.add(key);
-        }
-    });
-    if (priority === undefined) {
-        return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, verify);
-    }
-    if (!isObj(priority) || isPrototype(priority)) {
-        return priority;
-    }
-    if (isPrototype(fallback)) {
-        return deepMergeCopy(priority, undefined, verify);
-    }
-    verify.priority(priority);
-    verify.fallback(fallback);
-    if (isArrayOnly(priority)) { // merge items if both are objects with same index
-        return priority.concat(
-            isArrayOnly(fallback) ? fallback.slice(priority.length) : []
-        ).map(item => deepMergeCopy(item, undefined, verify));
-    }
-    if (!isObj(fallback)) {
-        if (isIterable(priority)) {
-            return priority; // shallow copy for iterable like Map, fix later
-        }
-        return Reflect.ownKeys(priority).reduce((copy, key) => ( // cursed syntax btw
-            copy[key] = deepMergeCopy(priority[key], undefined, verify), copy
-        ), {});
-    }
-    return Array.from(new Set([
-        ...Reflect.ownKeys(priority),
-        ...Reflect.ownKeys(fallback),
-    ])).reduce((copy, key) => (
-        (copy[key] = deepMergeCopy(priority[key], fallback[key], verify)), copy
-    ), {});
-}
-export const format = precomputeFormat();
-function precomputeFormat() {
+
+export const format = (() => {
     const extractTypeSelector = precomputeDispatchTable([
         [(target) => target.data === null, () => `null`],
         [(target) => target.data instanceof Date, () => `date`],
@@ -176,40 +45,17 @@ function precomputeFormat() {
         const type = formatCustom(target.data, opts.type);
         return type + expanded;
     };
-}
+})();
+
 function precomputeDispatchTable(pairs, fallback = () => undefined) {
+    const truthy = (arg) => ({ predicate }) => predicate(arg);
     const field = ([predicate, extractor]) => ({ predicate, extractor });
     const table = pairs.map(field);
-    return (arg) => {
-        const truthy = ({ predicate }) => predicate(arg);
-        return table.find(truthy)?.extractor ?? fallback;
-    };
+    return (arg) => table.find(truthy(arg))?.extractor ?? fallback;
 };
-/*
-export function formatOLD(arg, options, cyclicRefDict) {
-    const opts = normalizeOptions(options); // move to formatObject
-    const target = Target.normalize(arg);
-    const { data } = target;
-    const type = formatCustom(data, opts.type);
-    const dispatch = [
-        //asynciterable (await with timeout)
-        //Promise (.then)
-        //toJSON
-        //HTMLAllCollection
-        [`null`, data === null],
-        [`date`, data instanceof Date],
-        [`error`, data instanceof Error],
-    ].find(([, predicate]) => predicate)?.[0] ?? typeof data;
-    const expanded = ({
-        function: () => formatCustom(data.name, opts),
-        string: () => formatCustom(`"${data}"`, opts),
-        symbol: () => formatSymbol(data, opts),
-        object: () => formatObject(target, opts, cyclicRefDict),
-    })[dispatch]?.() ?? formatCustom(String(data), opts);
-    return type + expanded;
-}
-*/
-export function formatObject(target, options) {
+
+const cyclicRefDict = new Map();
+function formatObject(target, options) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
     const opts = normalizeOptions(options);
@@ -239,7 +85,7 @@ export function formatObject(target, options) {
     const isArrayItem = (isParentArray =>
         ([key]) => isParentArray && parseInt(String(key)) >= 0
     )(isArrayLike(receiver));
-    const groups = createObjectGroups([
+    const groups = createObjectGroups([ // IMPLEMENT WITH FACTORY PATTERN
         [`GroupPropertyEntry`, `primitive`],
         [`GroupPropertyEntry`, `getter`, ({ value, descr }) => value != null && isGetter(descr)],
         [`GroupIterator`],
@@ -279,7 +125,8 @@ export function formatObject(target, options) {
     const output = formatCustom(prefix + expanded + suffix, opts.object);
     return `(${length})${output}${origin}`;
 }
-export function createObjectGroups(setup, target, options) {
+
+function createObjectGroups(setup, target, options) {
     const opts = normalizeOptions(options);
     const { data, name, path, indent, receiver } = target;
     const { current } = indent.resolve;
@@ -342,7 +189,7 @@ export function createObjectGroups(setup, target, options) {
                 const padding = format(this.mutablePropertyList.reduce(longest, ``)).length;
                 return this.mutablePropertyList.map(({ key, value, descr }, index) => {
                     const expanded = format(new Target(
-                        value, key, path.concat(keyStr(key)), indent.next(opts)
+                        value, key, path.concat(stringifyKey(key)), indent.next(opts)
                     ), opts);
                     const hasNewline = expanded.includes(`\n`);
                     const accessed = format(key).padEnd(hasNewline ? 0 : padding);
@@ -361,7 +208,11 @@ export function createObjectGroups(setup, target, options) {
                 const indPrtype = indent.with(-1, opts.prtype);
                 const accessed = formatCustom(`__proto__`, opts);
                 const expanded = format(new Target(
-                    objPrtype, `${keyStr(name)}.${strPrtype}`, path.concat(strPrtype), indPrtype.next(opts), receiver
+                    objPrtype,
+                    `${stringifyKey(name)}.${strPrtype}`,
+                    path.concat(strPrtype),
+                    indPrtype.next(opts),
+                    receiver
                 ), opts);
                 return `${indPrtype.resolve.current}${accessed} = ${expanded}${current}`;
             }
@@ -407,13 +258,14 @@ export function createObjectGroups(setup, target, options) {
     };
     return setup.map(([type, ...args]) => new returnTypes[type](...args));
 }
-export function formatArray(target, options, cyclicRefDict) {
+
+function formatArray(target, options, cyclicRefDict) {
     const opts = normalizeOptions(options);
     const { name, path, indent, receiver } = target;
     const { current, previous } = indent.resolve;
     const arr = Array.from(receiver);
-    const firstType = dataTypeStr(arr[0]);
-    const isSameType = arr.every(item => dataTypeStr(item) === firstType);
+    const firstType = strType(arr[0]);
+    const isSameType = arr.every(item => strType(item) === firstType);
     const newline = arr.length < opts.newlineLimitArray;
     const [prefix, append] = !newline ? [` `, ` `] : [current, `,${previous}`];
     const formatItem = (item, indexed) => format(new Target(
@@ -426,18 +278,21 @@ export function formatArray(target, options, cyclicRefDict) {
     const itemType = !isSameType ? `` : `${firstType}: `;
     return `(${itemType}${arr.length})${formatCustom(expanded, opts)}${origin}`;
 }
-export function formatArrayLike() {
+
+function formatArrayLike() {
     return null; // array item name to array[index]
 }
-export function keyStr(key, options) {
+
+
+//-----#
+//-----# Format.Simple
+//-----#
+
+function stringifyKey(key, options) {
     return typeof key === `symbol` ? formatSymbol(key, options) : key;
 }
-export function formatSymbol(sym, options) {
-    const msg = sym.description;
-    const str = knownSymbols.includes(sym) ? msg : (Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`);
-    return formatCustom(str, options);
-}
-export function formatDescriptor(descr = {}, options) {
+
+function formatDescriptor(descr = {}, options) {
     const descrModified = [
         [`W`, descr.writable === false],
         [`E`, descr.enumerable === false],
@@ -447,39 +302,55 @@ export function formatDescriptor(descr = {}, options) {
     ].filter(([, predicate]) => predicate).map(([value]) => value).join(``);
     return !descrModified ? `` : formatCustom(descrModified, options.descriptor);
 }
-export function formatCustom(arg, { format: {
-    ignore = false,
-    modify = null,
-    prefix = ``,
-    suffix = ``,
-} } = defaults) {
-    return ignore ? `` : `${prefix}${modify?.(arg) ?? arg}${suffix}`;
-}
-export function dataTypeStr(arg) {
+
+
+//-----#
+//-----# Operation.String
+//-----#
+
+function strType(arg) {
     return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
 }
-export function isArrayOnly(arg, length) {
+
+
+//-----#
+//-----# Operation.Predicate
+//-----#
+
+function isPrototype(arg) {
+    return isObj(arg) && arg === arg.constructor.prototype;
+}
+
+function isArrayOnly(arg, length) {
     return Array.isArray(arg) && isArrayMinimal(arg, length);
 }
-export function isArrayMinimal(arg, length) {
+
+function isArrayMinimal(arg, length) {
     return isArrayLike(arg) && arg.length === (length ?? Reflect.ownKeys(arg).length) - 1;
 }
-export function isArrayLike(arg) {
+
+function isArrayLike(arg) {
     return isObj(arg) && Number.isInteger(arg.length) && arg.length >= 0;
 }
-export function isIterable(arg) {
+
+function isIterable(arg) {
     return isObj(arg) && typeof arg[Symbol.iterator] === `function`;
 }
-export function isObj(arg) {
-    return Boolean(arg) && typeof arg === `object`;
-}
-export function isGetter(desc = {}) {
+
+function isGetter(desc = {}) {
     return typeof desc.get === `function`;
 }
-export function newlineTag({ raw }, ...args) {
-    return String.raw({ raw: raw.map(str => str.replace(/\n\s*/g, ``).replace(/\\n/g, `\n`)) }, ...args);
+
+function isObj(arg) {
+    return Boolean(arg) && typeof arg === `object`;
 }
-export class Target { // Overhaul to Metadata class / Context / State / TraversalState & state
+
+
+//-----#
+//-----# Class
+//-----#
+
+class Target { // Overhaul to Metadata class / Context / State / TraversalState & state
     #name;
     #path;
     #indent;
@@ -492,7 +363,7 @@ export class Target { // Overhaul to Metadata class / Context / State / Traversa
         this.#receiver = receiver;
     }
     get name() {
-        return this.#name ?? dataTypeStr(this.data);
+        return this.#name ?? strType(this.data);
     }
     get path() {
         return this.#path ?? [this.name];
@@ -522,7 +393,8 @@ export class Target { // Overhaul to Metadata class / Context / State / Traversa
         return arg instanceof this ? arg : new this(arg);
     }
 }
-export class Indentation {
+
+class Indentation {
     #steps;
     constructor(steps = [`\n`]) {
         this.#steps = steps;
@@ -553,15 +425,172 @@ export class Indentation {
 }
 
 
-// ====================
-//               Logger
-// ====================
+//-----#
+//-----# Options
+//-----#
 
-export function log(...args) {
-    logCustom({ type: { format: { ignore: false } } }, ...args);
+function createDefaultOptions() {
+    return { // existing object blocklist
+        newlineLimitGroup: 40,
+        newlineLimitArray: 40,
+        minimizeSameTypeArray: true,
+        originProperty: true,
+        format: {
+            prefix: `[`,
+            suffix: `]`,
+        },
+        indent: {
+            base: `|`,
+            fill: ` `,
+            size: 8,
+        },
+        object: {
+            format: {
+                prefix: `{`,
+                suffix: `}`,
+            },
+        },
+        descriptor: {
+            format: {
+                prefix: `'`,
+                suffix: ``,
+            },
+        },
+        origin: {
+            format: {
+                prefix: `( `,
+                suffix: ` )`,
+            },
+        },
+        header: {
+            format: {
+                prefix: `\\ `,
+                suffix: ``,
+            },
+            indent: {
+                base: `|`,
+                fill: `¨`,
+                size: 8,
+            },
+        },
+        prtype: {
+            format: {
+                modify: strType,
+                prefix: `[[`,
+                suffix: `]]`,
+            },
+            indent: {
+                base: `|`,
+                fill: `-`,
+                size: 4,
+            },
+            exclude: [
+                Object.prototype,
+                Array.prototype,
+                Iterator.prototype,
+            ],
+        },
+        type: {
+            format: {
+                ignore: true,
+                modify: strType,
+                prefix: `<`,
+                suffix: `>`,
+            },
+        },
+        empty: {
+            indent: {
+                base: ` `,
+                fill: ` `,
+                size: 4,
+            },
+        },
+        invokeAsync: {
+            enabled: true,
+            timeout: 10,
+        },
+        invokeFunctions: {
+            enabled: false,
+            safeish: false,
+            unsafer: false,
+            specific: {
+                enabled: false,
+                allowlist: [],
+            },
+            deranged: {
+                enabled: false,
+                blocklist: [],
+                fnArgs: [],
+            },
+        },
+    };
+}
+const normalized = new Set([defaults]);
+export function normalizeOptions(arg) {
+    if (!isObj(arg)) {
+        return defaults;
+    }
+    if (normalized.has(arg)) {
+        return arg;
+    }
+    const opts = deepMergeCopy(arg, defaults); // add "known" deepMerge that only merge existing defaults keys
+    normalized.add(opts);
+    return opts;
+}
+export function deepMergeCopy(priority, fallback, verifier) {
+    const verify = Boolean(verifier) ? verifier : (closure => ({
+        priority: closure(new Set()),
+        fallback: closure(new Set()),
+    }))(set => key => {
+        if (isObj(key)) {
+            if (set.has(key)) {
+                throw `[insert-circular-reference-solution-here]`;
+            }
+            set.add(key);
+        }
+    });
+    if (priority === undefined) {
+        return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, verify);
+    }
+    if (!isObj(priority) || isPrototype(priority)) {
+        return priority;
+    }
+    if (isPrototype(fallback)) {
+        return deepMergeCopy(priority, undefined, verify);
+    }
+    verify.priority(priority);
+    verify.fallback(fallback);
+    if (isArrayOnly(priority)) { // merge items if both are objects with same index
+        return priority.concat(
+            isArrayOnly(fallback) ? fallback.slice(priority.length) : []
+        ).map(item => deepMergeCopy(item, undefined, verify));
+    }
+    if (!isObj(fallback)) {
+        if (isIterable(priority)) {
+            return priority; // shallow copy for iterable like Map, fix later
+        }
+        return Reflect.ownKeys(priority).reduce((copy, key) => ( // cursed syntax btw
+            copy[key] = deepMergeCopy(priority[key], undefined, verify), copy
+        ), {});
+    }
+    return Array.from(new Set([
+        ...Reflect.ownKeys(priority),
+        ...Reflect.ownKeys(fallback),
+    ])).reduce((copy, key) => (
+        (copy[key] = deepMergeCopy(priority[key], fallback[key], verify)), copy
+    ), {});
 }
 
-export function logCustom(options, ...args) {
+
+//-----#
+//-----# Logger
+//-----#
+
+export function log(...args) {
+    return logCustom({ type: { format: { ignore: false } } }, console.log, ...args);
+}
+
+export function logCustom(options, logger = console.log, ...args) { // add param logger, return fn
     const opts = normalizeOptions(options);
     const header = `[${new URL(import.meta.url).pathname.slice(1)}]`;
     const spacer = `\n\n${`-`.repeat(31)}\n\n`;
@@ -569,7 +598,7 @@ export function logCustom(options, ...args) {
     const output = args.map((arg, num) => {
         try {
             const keys = isObj(arg) ? Reflect.ownKeys(arg) : [];
-            const captured = keys.length === 1 && dataTypeStr(arg) === `Object`;
+            const captured = keys.length === 1 && strType(arg) === `Object`;
             const [name, data] = captured ? [keys[0], arg[keys[0]]] : [formatCustom(arg, opts.type), arg];
             const prepend = captured ? `${format(name)} = ` : ``;
             const expanded = format(new Target(data, name, [name], indent.next(opts)), opts, cyclicRefDict);
@@ -578,6 +607,6 @@ export function logCustom(options, ...args) {
             return `${spacer}[${num}]: ${format(error)}`;
         }
     }).join(``);
-    console.log(header + output);
+    return logger(header + output);
     // make objDone to Map, filter all entries above 1, print last
 }
