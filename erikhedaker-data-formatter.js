@@ -82,20 +82,28 @@ function formatObject(target, options) {
     if (Boolean(formatEarlyReturn)) {
         return formatEarlyReturn();
     }
+    /*
     const isArrayItem = (isParentArray =>
         ([key]) => isParentArray && parseInt(String(key)) >= 0
     )(isArrayLike(receiver));
-    const groups = createObjectGroups([ // IMPLEMENT WITH FACTORY PATTERN
-        [`GroupPropertyEntry`, `primitive`],
-        [`GroupPropertyEntry`, `getter`, ({ value, descr }) => value != null && isGetter(descr)],
-        [`GroupIterator`],
-        [`GroupPropertyEntry`, `object`, ({ value }) => isObj(value)],
-        [`GroupPropertyEntry`, `array`, ({ value }) => isArrayLike(value)],
-        [`GroupPropertyKey`, `function`, ({ value }) => typeof value === `function`],
-        [`GroupPropertyKey`, `null`, ({ value }) => value === null],
-        [`GroupPropertyKey`, `undefined`, ({ value }) => value === undefined],
-        [`GroupPrototype`],
-    ], target, options);
+    */
+    const {
+        GroupPropertyEntry,
+        GroupPropertyKey,
+        GroupIterator,
+        GroupPrototype,
+    } = createObjectGroups(target, options);
+    const groups = [ // IMPLEMENT WITH FACTORY PATTERN
+        new GroupPropertyEntry(`primitive`),
+        new GroupPropertyEntry(`getter`, ({ value, descr }) => value != null && isGetter(descr)),
+        new GroupIterator(),
+        new GroupPropertyEntry(`object`, ({ value }) => isObj(value)),
+        new GroupPropertyEntry(`array`, ({ value }) => isArrayLike(value)),
+        new GroupPropertyKey(`function`, ({ value }) => typeof value === `function`),
+        new GroupPropertyKey(`null`, ({ value }) => value === null),
+        new GroupPropertyKey(`undefined`, ({ value }) => value === undefined),
+        new GroupPrototype(),
+    ];
     const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
     const selectGroup = (fallback => property => groups.find(
         group => group.predicate(property)
@@ -126,7 +134,7 @@ function formatObject(target, options) {
     return `(${length})${output}${origin}`;
 }
 
-function createObjectGroups(setup, target, options) {
+function createObjectGroups(target, options) {
     const opts = normalizeOptions(options);
     const { data, name, path, indent, receiver } = target;
     const { current } = indent.resolve;
@@ -144,7 +152,7 @@ function createObjectGroups(setup, target, options) {
         get expand() {
             return ``;
         }
-    };
+    }
     class GroupProperty extends GroupBase {
         constructor(header, predicate) {
             super();
@@ -167,96 +175,99 @@ function createObjectGroups(setup, target, options) {
         formatter() {
             return ``;
         }
-    };
-    const returnTypes = {
-        GroupPropertyKey: class extends GroupProperty {
-            constructor(...args) {
-                super(...args);
-            }
-            formatter() {
-                const newline = this.mutablePropertyList.length < opts.newlineLimitGroup;
-                return this.mutablePropertyList.map(({ key, descr }) =>
-                    format(key) + formatDescriptor(descr, opts)
-                ).join(newline ? current : `,`);
-            }
-        },
-        GroupPropertyEntry: class extends GroupProperty {
-            constructor(...args) {
-                super(...args);
-            }
-            formatter() {
-                const longest = (max, { key }) => max.length > key.length ? max : key;
-                const padding = format(this.mutablePropertyList.reduce(longest, ``)).length;
-                return this.mutablePropertyList.map(({ key, value, descr }, index) => {
-                    const expanded = format(new Target(
-                        value, key, path.concat(stringifyKey(key)), indent.next(opts)
-                    ), opts);
-                    const hasNewline = expanded.includes(`\n`);
-                    const accessed = format(key).padEnd(hasNewline ? 0 : padding);
-                    const spacer = hasNewline && index < this.mutablePropertyList.length - 1 ? current : ``;
-                    return `${accessed} = ${expanded}${formatDescriptor(descr, opts)}${spacer}`;
-                }).join(current);
-            }
-        },
-        GroupPrototype: class extends GroupBase {
-            get verify() {
-                return !opts.prtype.format.ignore;
-            }
-            get expand() {
-                const objPrtype = Object.getPrototypeOf(data);
-                const strPrtype = formatCustom(objPrtype, opts.prtype);
-                const indPrtype = indent.with(-1, opts.prtype);
-                const accessed = formatCustom(`__proto__`, opts);
+    }
+    class GroupPropertyKey extends GroupProperty {
+        constructor(...args) {
+            super(...args);
+        }
+        formatter() {
+            const newline = this.mutablePropertyList.length < opts.newlineLimitGroup;
+            return this.mutablePropertyList.map(({ key, descr }) =>
+                format(key) + formatDescriptor(descr, opts)
+            ).join(newline ? current : `,`);
+        }
+    }
+    class GroupPropertyEntry extends GroupProperty {
+        constructor(...args) {
+            super(...args);
+        }
+        formatter() {
+            const longest = (max, { key }) => max.length > key.length ? max : key;
+            const padding = format(this.mutablePropertyList.reduce(longest, ``)).length;
+            return this.mutablePropertyList.map(({ key, value, descr }, index) => {
                 const expanded = format(new Target(
-                    objPrtype,
-                    `${stringifyKey(name)}.${strPrtype}`,
-                    path.concat(strPrtype),
-                    indPrtype.next(opts),
-                    receiver
+                    value, key, path.concat(stringifyKey(key)), indent.next(opts)
                 ), opts);
-                return `${indPrtype.resolve.current}${accessed} = ${expanded}${current}`;
-            }
-        },
-        GroupIterator: class extends GroupBase {
-            #iterable = false;
-            predicate({ key, value }) {
-                return key === Symbol.iterator && typeof value === `function`;
-            }
-            push(_) {
-                this.#iterable = true;
-            }
-            get verify() {
-                return this.#iterable;
-            }
-            get expand() {
-                const tagged = formatCustom(`iterator`, opts.header);
-                const output = this.formatter();
-                return `${prepend}${tagged}${current}${output}${current}`;
-            }
-            formatter() {
-                const size = receiver.size ?? receiver.length ?? 20; // is integer check
-                const iter = receiver[Symbol.iterator]();
-                const next = indent.next(opts);
-                const prtypeChain = arg => isObj(arg) && arg !== Object.prototype ? [arg].concat(
-                    prtypeChain(Object.getPrototypeOf(arg))
-                ) : [];
-                const accessed = formatSymbol(Symbol.iterator, opts);
-                const expanded = format(new Target(
-                    receiver[Symbol.iterator], accessed, path.concat(accessed), next
-                ), opts, cyclicRefDict);
-                const entries = format(new Target( // opts: skip origin, add nested element types
-                    Array.from(iter.take(size)), accessed, path.concat(accessed), next
-                ), { originProperty: false }, cyclicRefDict); // pass rest of opts after fixing deepMerge Array merge
-                const type = formatCustom(iter, opts.type);
-                const prtypes = prtypeChain(Object.getPrototypeOf(iter)).map(
-                    obj => formatCustom(obj, opts.prtype)
-                ).join(`.`);
-                const invoked = formatCustom(`invoked-( ${type}.${prtypes} )`, opts);
-                return `${accessed} = ${expanded} ->${current}${invoked} = ${entries}`;
-            }
-        },
+                const hasNewline = expanded.includes(`\n`);
+                const accessed = format(key).padEnd(hasNewline ? 0 : padding);
+                const spacer = hasNewline && index < this.mutablePropertyList.length - 1 ? current : ``;
+                return `${accessed} = ${expanded}${formatDescriptor(descr, opts)}${spacer}`;
+            }).join(current);
+        }
+    }
+    class GroupPrototype extends GroupBase {
+        get verify() {
+            return !opts.prtype.format.ignore;
+        }
+        get expand() {
+            const objPrtype = Object.getPrototypeOf(data);
+            const strPrtype = formatCustom(objPrtype, opts.prtype);
+            const indPrtype = indent.with(-1, opts.prtype);
+            const accessed = formatCustom(`__proto__`, opts);
+            const expanded = format(new Target(
+                objPrtype,
+                `${stringifyKey(name)}.${strPrtype}`,
+                path.concat(strPrtype),
+                indPrtype.next(opts),
+                receiver
+            ), opts);
+            return `${indPrtype.resolve.current}${accessed} = ${expanded}${current}`;
+        }
+    }
+    class GroupIterator extends GroupBase {
+        #iterable = false;
+        predicate({ key, value }) {
+            return key === Symbol.iterator && typeof value === `function`;
+        }
+        push(_) {
+            this.#iterable = true;
+        }
+        get verify() {
+            return this.#iterable;
+        }
+        get expand() {
+            const tagged = formatCustom(`iterator`, opts.header);
+            const output = this.formatter();
+            return `${prepend}${tagged}${current}${output}${current}`;
+        }
+        formatter() {
+            const size = receiver.size ?? receiver.length ?? 20; // is integer check
+            const iter = receiver[Symbol.iterator]();
+            const next = indent.next(opts);
+            const prtypeChain = arg => isObj(arg) && arg !== Object.prototype ? [arg].concat(
+                prtypeChain(Object.getPrototypeOf(arg))
+            ) : [];
+            const accessed = formatSymbol(Symbol.iterator, opts);
+            const expanded = format(new Target(
+                receiver[Symbol.iterator], accessed, path.concat(accessed), next
+            ), opts, cyclicRefDict);
+            const entries = format(new Target( // opts: skip origin, add nested element types
+                Array.from(iter.take(size)), accessed, path.concat(accessed), next
+            ), { originProperty: false }, cyclicRefDict); // pass rest of opts after fixing deepMerge Array merge
+            const type = formatCustom(iter, opts.type);
+            const prtypes = prtypeChain(Object.getPrototypeOf(iter)).map(
+                obj => formatCustom(obj, opts.prtype)
+            ).join(`.`);
+            const invoked = formatCustom(`invoked-( ${type}.${prtypes} )`, opts);
+            return `${accessed} = ${expanded} ->${current}${invoked} = ${entries}`;
+        }
+    }
+    return {
+        GroupPropertyEntry,
+        GroupPropertyKey,
+        GroupIterator,
+        GroupPrototype,
     };
-    return setup.map(([type, ...args]) => new returnTypes[type](...args));
 }
 
 function formatArray(target, options, cyclicRefDict) {
