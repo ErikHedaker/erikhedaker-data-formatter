@@ -99,6 +99,11 @@ function createDispatchTable(pairs, fallback) {
     return (arg) => table.find(truthy(arg))?.dispatcher ?? fallback;
 };
 
+
+//-----#
+//-----# Format.Complex
+//-----#
+
 const cyclicRefDict = new Map();
 function formatObject(target, options) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
@@ -149,6 +154,9 @@ function formatObject(target, options) {
         GroupPropertyKey(`undefined`, ({ value }) => value === undefined),
         GroupPrototype(`__proto__`),
     ];
+    const truthy = (arg) => ({ predicate }) => predicate(arg);
+    const selectGroup = (property) => groups.find(truthy(property)) ?? primitives;
+    const mutateGroup = (property) => selectGroup(property).push(property);
     const propertyWhenError = (key, error) => ({ key, value: error, descr: undefined });
     const propertyFromKeyThrowable = (key) => ({
         key,
@@ -168,9 +176,6 @@ function formatObject(target, options) {
         ternaryCmp(isObj(a.value), isObj(b.value)) ||
         ternaryCmp(typeof a.value, typeof b.value) ||
         ternaryCmp(String(a.key), String(b.key));
-    const truthy = (arg) => ({ predicate }) => predicate(arg);
-    const selectGroup = (property) => groups.find(truthy(property)) ?? primitives;
-    const mutateGroup = (property) => selectGroup(property).push(property);
     cyclicRefDict.set(target.data, [target.path]);
     keys.map(propertyFromKey).toSorted(propertySorter).forEach(mutateGroup);
     const expanded = groups.filter((group) => group.verify).map((group) => group.expand).join(``);
@@ -382,10 +387,10 @@ function formatSymbol(sym, options = {}) {
 
 function formatCustom(arg, options = {}) {
     const {
-        ignore = false,
-        modify = identity,
         prefix = ``,
         suffix = ``,
+        ignore = false,
+        modify = identity,
     } = optionsWithOverride(options).format;
     return ignore ? `` : `${prefix}${modify(arg)}${suffix}`;
 }
@@ -401,7 +406,7 @@ function strType(arg) {
 
 
 //-----#
-//-----# Operation.Predicate
+//-----# Operation.Boolean
 //-----#
 
 function isPrototype(arg) {
@@ -424,12 +429,12 @@ function isIterable(arg) {
     return isObj(arg) && typeof arg[Symbol.iterator] === `function`;
 }
 
-function isGetter(desc = {}) {
-    return typeof desc.get === `function`;
-}
-
 function isObj(arg) {
     return Boolean(arg) && typeof arg === `object`;
+}
+
+function isGetter(desc = {}) {
+    return typeof desc.get === `function`;
 }
 
 //-----#
@@ -516,61 +521,41 @@ class Indentation {
 //-----# Options
 //-----#
 
-function createDefaultOptions() {
-    return { // existing object blocklist
+function createDefaultOptions() { // existing object blocklist
+    const templateFormat = (
+        prefix = ``,
+        suffix = ``,
+        modify = identity,
+        ignore = false,
+    ) => ({ prefix, suffix, modify, ignore });
+    const templateIndent = (
+        base = ``,
+        fill = ``,
+        size = 0,
+    ) => ({ base, fill, size });
+    return {
         newlineLimitGroup: 40,
         newlineLimitArray: 40,
         minimizeSameTypeArray: true,
         originProperty: true,
-        format: {
-            prefix: `[`,
-            suffix: `]`,
-        },
-        indent: {
-            base: `|`,
-            fill: ` `,
-            size: 8,
-        },
+        format: templateFormat(`[`, `]`),
+        indent: templateIndent(`|`, ` `, 8),
         object: {
-            format: {
-                prefix: `{`,
-                suffix: `}`,
-            },
+            format: templateFormat(`{`, `}`),
         },
         descriptor: {
-            format: {
-                prefix: `'`,
-                suffix: ``,
-            },
+            format: templateFormat(`'`, ``),
         },
         origin: {
-            format: {
-                prefix: `( `,
-                suffix: ` )`,
-            },
+            format: templateFormat(`( `, ` )`),
         },
         header: {
-            format: {
-                prefix: `\\ `,
-                suffix: ``,
-            },
-            indent: {
-                base: `|`,
-                fill: `¨`,
-                size: 8,
-            },
+            format: templateFormat(`\\ `, ``),
+            indent: templateIndent(`|`, `¨`, 8),
         },
         prtype: {
-            format: {
-                modify: strType,
-                prefix: `[[`,
-                suffix: `]]`,
-            },
-            indent: {
-                base: `|`,
-                fill: `-`,
-                size: 4,
-            },
+            format: templateFormat(`[[`, `]]`, strType),
+            indent: templateIndent(`|`, `-`, 4),
             exclude: [
                 Object.prototype,
                 Array.prototype,
@@ -578,25 +563,10 @@ function createDefaultOptions() {
             ],
         },
         type: {
-            format: {
-                ignore: true,
-                modify: strType,
-                prefix: `<`,
-                suffix: `>`,
-            },
-        },
-        empty: {
-            indent: {
-                base: ` `,
-                fill: ` `,
-                size: 4,
-            },
+            format: templateFormat(`<`, `>`, strType, true),
         },
         error: {
-            format: {
-                prefix: `<ERROR>\n`,
-                suffix: `\n</ERROR>`,
-            },
+            format: templateFormat(`<ERROR>\n`, `\n</ERROR>`, strType, true),
         },
         invokeAsync: {
             enabled: true,
