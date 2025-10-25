@@ -17,6 +17,10 @@ function constant(arg) {
 //-----# Combinator.Variadic
 //-----#
 
+function thrush(...args) {
+    return (func) => func(...args);
+}
+
 function compose(...funcs) {
     return (arg) => funcs.reduceRight((acc, fn) => fn(acc), arg);
 }
@@ -40,6 +44,19 @@ function filter(func) {
 
 
 //-----#
+//-----# Transformer
+//-----#
+
+function access(key) {
+    return (obj) => obj[key];
+}
+
+function equals(a) {
+    return (b) => a === b;
+}
+
+
+//-----#
 //-----# Memoized
 //-----#
 
@@ -58,16 +75,27 @@ const isKnownSymbol = (() => {
     return (sym) => knownSymbols.has(sym);
 })();
 
-function formatDescriptor(descr = {}, options = {}) {
-    const descrModified = [
-        [`W`, descr.writable === false],
-        [`E`, descr.enumerable === false],
-        [`C`, descr.configurable === false],
-        [`G`, typeof descr.get === `function`],
-        [`S`, typeof descr.set === `function`],
-    ].filter(([, predicate]) => predicate).map(([value]) => value).join(``);
-    return !descrModified ? `` : formatCustom(descrModified, options.descriptor);
-}
+const formatDescriptor = (() => {
+    const isFalse = equals(false);
+    const isFunc = equals(`function`);
+    const typeOf = (value) => typeof value;
+    const propFlag = (key) => compose(isFalse, access(key));
+    const propFunc = (key) => compose(isFunc, typeOf, access(key));
+    const dTableDescr = createPredicateTable([
+        [propFlag(`writable`), `W`],
+        [propFlag(`enumerable`), `E`],
+        [propFlag(`configurable`), `C`],
+        [propFunc(`get`), `G`],
+        [propFunc(`set`), `S`],
+    ]);
+    const toStrBinder = ({ predicate, value }) => (descr) => predicate(descr) ? value : ``;
+    const toStrFuncs = dTableDescr.map(toStrBinder);
+    return (descr = {}, options = {}) => {
+        const toStr = thrush(descr);
+        const descrStr = toStrFuncs.map(toStr).join(``);
+        return !descrStr ? `` : formatCustom(descrStr, options.descriptor);
+    };
+})();
 
 export const format = (() => {
     const dTableFormatterSelect = createDispatchTable([
@@ -92,11 +120,16 @@ export const format = (() => {
     };
 })();
 
+function createPredicateTable(pairs) {
+    const template = ([predicate, value]) => ({ predicate, value });
+    return pairs.map(template);
+};
+
+
 function createDispatchTable(pairs, fallback) {
     const truthy = (arg) => ({ predicate }) => predicate(arg);
-    const named = ([predicate, dispatcher]) => ({ predicate, dispatcher });
-    const table = pairs.map(named);
-    return (arg) => table.find(truthy(arg))?.dispatcher ?? fallback;
+    const table = createPredicateTable(pairs);
+    return (arg) => table.find(truthy(arg))?.value ?? fallback;
 };
 
 
