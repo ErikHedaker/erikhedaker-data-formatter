@@ -4,16 +4,16 @@
 //-----# Combinator.Pure
 //-----#
 
-function identity(arg) {
-    return arg;
+function identity(value) {
+    return value;
 }
 
-function constant(arg) {
-    return () => arg;
+function constant(value) {
+    return () => value;
 }
 
 function flip(func) {
-    return (y) => (x) => func(x)(y)
+    return (x) => (y) => func(y)(x);
 }
 
 
@@ -26,7 +26,7 @@ function thrush(...args) {
 }
 
 function compose(...funcs) {
-    return (arg) => funcs.reduceRight((acc, fn) => fn(acc), arg);
+    return (value) => funcs.reduceRight((acc, func) => func(acc), value);
 }
 
 function partial(func, ...prepend) {
@@ -34,7 +34,7 @@ function partial(func, ...prepend) {
 }
 
 function curry(func) {
-    const num = (arg) => arg.length;
+    const num = ({ length }) => length;
     const arity = num(func);
     const sated = (args) => num(args) >= arity;
     const curried = (...args) => sated(args) ? func(...args) : partial(curried, ...args);
@@ -71,6 +71,14 @@ function equals(a) {
     return (b) => a === b;
 }
 
+function instanceOf(type) {
+    return (value) => value instanceof type;
+}
+
+function typeOf(value) {
+    return typeof value;
+}
+
 
 //-----#
 //-----# Memoized
@@ -94,7 +102,6 @@ const isKnownSymbol = (() => {
 const formatDescriptor = (() => {
     const isFalse = equals(false);
     const isFunc = equals(`function`);
-    const typeOf = (value) => typeof value;
     const propFlag = (key) => compose(isFalse, access(key));
     const propFunc = (key) => compose(isFunc, typeOf, access(key));
     const dTableDescr = createPredicateTable([
@@ -105,30 +112,35 @@ const formatDescriptor = (() => {
         [propFunc(`set`), `S`],
     ]);
     const toStrBinder = ({ predicate, value }) => (descr) => predicate(descr) ? value : ``;
-    const toStr = compose(thrush, join(``), compose(flip(compose(map, thrush)), map(toStrBinder))(dTableDescr));
+    const thrushToArr = compose(flip(compose(map, thrush)), map(toStrBinder));
+    const thrushToStr = compose(thrush, join(``), thrushToArr(dTableDescr));
     const isEmpty = equals(``);
     const getEmpty = constant(``);
-    const formatCustomFlipped = compose(flip, curry)(formatCustom);
+    const formatDescrFlip = compose(flip, curry)(formatCustom);
     return (descr = {}, options = {}) => {
-        const format = formatCustomFlipped(options.descriptor);
-        const invoke = toStr(descr);
+        const format = formatDescrFlip(options.descriptor);
+        const invoke = thrushToStr(descr);
         const expand = invoke(isEmpty) ? getEmpty : format;
         return invoke(expand);
     };
 })();
 
 export const formatAny = (() => {
+    const accessData = access(`data`);
+    const combinator = (f) => (g) => (x) => (y) => g(x)(f(y));
+    const isData = combinator(accessData);
+    const isDataClass = isData(instanceOf);
     const dTableFormatSelect = createDispatchTable([
-        [(target) => target.data === null, () => `null`],
-        [(target) => target.data instanceof Date, () => `date`],
-        [(target) => target.data instanceof Error, () => `error`],
-    ], (target) => typeof target.data);
+        [isData(equals)(null), constant(`null`)],
+        [isDataClass(Date), constant(`date`)],
+        [isDataClass(Error), constant(`error`)],
+    ], compose(typeOf, accessData));
     const dTableFormat = createDispatchTable([
-        [(str) => str === `function`, (target, opts) => formatCustom(target.data.name, opts)],
-        [(str) => str === `string`, (target, opts) => formatCustom(`"${target.data}"`, opts)],
-        [(str) => str === `symbol`, (target, opts) => formatSymbol(target.data, opts)],
-        [(str) => str === `object`, (target, opts) => formatObject(target, opts)],
-        [(str) => str === `error`, (target, opts) => formatCustom(target.data.stack, opts.error)],
+        [equals(`function`), (target, opts) => formatCustom(target.data.name, opts)],
+        [equals(`string`), (target, opts) => formatCustom(`"${target.data}"`, opts)],
+        [equals(`symbol`), (target, opts) => formatSymbol(target.data, opts)],
+        [equals(`object`), (target, opts) => formatObject(target, opts)],
+        [equals(`error`), (target, opts) => formatCustom(target.data.stack, opts.error)],
     ], (target, opts) => formatCustom(String(target.data), opts));
     return (arg, options) => {
         const opts = normalizeOptions(options);
@@ -276,9 +288,9 @@ function createObjectGroupPropertyKey(target, options, header, predicate = const
         verify,
         push,
     } = createObjectGroupBase(target, options, header);
-    const isOverLimit = () => mutableList.length < opts.newlineLimitGroup;
     const keyToStr = ({ key, descr }) => formatAny(key) + formatDescriptor(descr, opts);
-    const format = () => mutableList.map(keyToStr).join(isOverLimit() ? current : `,`);
+    const separate = ({ length }) => length < opts.newlineLimitGroup ? current : `,`;
+    const format = () => mutableList.map(keyToStr).join(separate(mutableList));
     return {
         get expand() {
             return expand(format);
@@ -619,7 +631,7 @@ function createDefaultOptions() { // existing object blocklist
             format: templateFormat(`<`, `>`, strType, true),
         },
         error: {
-            format: templateFormat(`<ERROR>\n`, `\n</ERROR>`, strType, true),
+            format: templateFormat(`<ERROR>\n`, `\n</ERROR>`),
         },
         invokeAsync: {
             enabled: true,
@@ -708,23 +720,34 @@ export function log(...args) {
     return logCustom({ type: { format: { ignore: false } } }, console.log, ...args);
 }
 
-export function logCustom(options, logger = console.log, ...args) { // add param logger, return fn
+export function logCustom(options, logger, ...args) {
     const opts = normalizeOptions(options);
-    const header = `[${new URL(import.meta.url).pathname.slice(1)}]`;
-    const spacer = `\n\n${`-`.repeat(31)}\n\n`;
     const indent = new Indentation();
-    const output = args.map((arg, num) => {
+    const isCaptured = (value, keys) => (
+        keys.length === 1 &&
+        strType(value) === `Object` &&
+        isObj(value[keys[0]])
+    );
+    const setupObj = (capturer, [name]) => [`${formatAny(name)} = `, name, capturer[name]];
+    const setupAny = (value) => [``, formatCustom(value, opts.type), value];
+    const setup = (value) => {
+        const keys = isObj(value) ? Reflect.ownKeys(value) : [];
+        return isCaptured(value, keys) ? setupObj(value, keys) : setupAny(value);
+    };
+    const toStr = (value) => {
         try {
-            const keys = isObj(arg) ? Reflect.ownKeys(arg) : [];
-            const captured = keys.length === 1 && strType(arg) === `Object`;
-            const [name, data] = captured ? [keys[0], arg[keys[0]]] : [formatCustom(arg, opts.type), arg];
-            const prepend = captured ? `${formatAny(name)} = ` : ``;
-            const expanded = formatAny(new Target(data, name, [name], indent.next(opts)), opts, cyclicRefDict);
-            return `${spacer}[${num}]: ${prepend}${expanded}`;
+            const [prepend, name, data] = setup(value);
+            const target = new Target(data, name, [name], indent.next(opts));
+            return prepend + formatAny(target, opts, cyclicRefDict);
         } catch (error) {
-            return `${spacer}[${num}]: ${formatAny(error)}`;
+            return formatAny(error);
         }
-    }).join(``);
+    };
+    const spacer = `\n\n${`-`.repeat(31)}\n\n`;
+    const moduleName = ({ url }) => `[${new URL(url).pathname.slice(1)}]`;
+    const reduceToStrNum = (acc, str, num) => `${acc}${spacer}[${num}]: ${str}`;
+    const header = moduleName(import.meta);
+    const output = args.map(toStr).reduce(reduceToStrNum, ``);
     return logger(header + output);
     // make objDone to Map, filter all entries above 1, print last
 }
