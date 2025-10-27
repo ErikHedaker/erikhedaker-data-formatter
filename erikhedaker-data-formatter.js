@@ -130,23 +130,42 @@ export const formatAny = (() => {
     const combinator = (f) => (g) => (x) => (y) => g(x)(f(y));
     const isData = combinator(accessData);
     const isDataClass = isData(instanceOf);
-    const dTableFormatSelect = createDispatchTable([
+    const dTableFormatArbiter = createDispatchTable([
         [isData(equals)(null), constant(`null`)],
         [isDataClass(Date), constant(`date`)],
         [isDataClass(Error), constant(`error`)],
     ], compose(typeOf, accessData));
-    const dTableFormat = createDispatchTable([
-        [equals(`function`), (target, opts) => formatCustom(target.data.name, opts)],
-        [equals(`string`), (target, opts) => formatCustom(`"${target.data}"`, opts)],
-        [equals(`symbol`), (target, opts) => formatSymbol(target.data, opts)],
-        [equals(`object`), (target, opts) => formatObject(target, opts)],
-        [equals(`error`), (target, opts) => formatCustom(target.data.stack, opts.error)],
-    ], (target, opts) => formatCustom(String(target.data), opts));
-    return (arg, options) => {
+    const dTableFormat = createDispatchTable([ // replace with map
+        [equals(`function`), (target, opts) => [formatCustom, target.data.name, opts]],
+        [equals(`string`), (target, opts) => [formatCustom, `"${target.data}"`, opts]],
+        [equals(`symbol`), (target, opts) => [formatSymbol, target.data, opts]],
+        [equals(`object`), (target, opts, cyclicRefDict) => [formatObject, target, opts, cyclicRefDict]],
+        [equals(`error`), (target, opts) => [formatCustom, target.data.stack, opts.error]],
+    ], (target, opts) => [formatCustom, String(target.data), opts]);
+    //change type from string to int mapping
+    const fastPathSet = new Set([
+        `number`,
+        `bigint`,
+        `boolean`,
+        `undefined`,
+        `null`,
+    ]);
+    return (arg, options, cyclicRefDict) => {
         const opts = normalizeOptions(options);
+        const fastPathArg = typeof arg;
+        if (fastPathArg === `string`) {
+            return formatCustom(`"${arg}"`, opts);
+        }
+        if (fastPathSet.has(fastPathArg)) {
+            return formatCustom(String(arg), opts);
+        }
+
         const target = Target.normalize(arg);
-        const selected = dTableFormatSelect(target)(target);
-        const expanded = dTableFormat(selected)(target, opts);
+        const arbitrate = dTableFormatArbiter(target);
+        const arbitrated = arbitrate(target);
+        const getFormatArgs = dTableFormat(arbitrated);
+        const [format, ...formatArgs] = getFormatArgs(target, opts, cyclicRefDict);
+        const expanded = format(...formatArgs);
         const dataType = formatCustom(target.data, opts.type);
         return dataType + expanded;
     };
@@ -169,8 +188,7 @@ function createDispatchTable(pairs, fallback) {
 //-----# Format.Complex
 //-----#
 
-const cyclicRefDict = new Map();
-function formatObject(target, options) {
+function formatObject(target, options, cyclicRefDict = new Map()) {
     //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
     //unroll iterator, filter keys if items contain keys from object
     const opts = normalizeOptions(options);
@@ -191,7 +209,7 @@ function formatObject(target, options) {
         [filtered, isExcluded(prtype) && !length],
         [copyOf(objRef), Boolean(objRef)],
         [copyOf(prtypeRef), Boolean(prtypeRef) && !length],
-        [() => formatArray(target, opts), isArrayOnly(target.receiver, length)],
+        [() => formatArray(target, opts, cyclicRefDict), isArrayOnly(target.receiver, length)],
     ].find(([, predicate]) => predicate)?.[0];
     if (Boolean(formatEarlyReturn)) {
         return formatEarlyReturn();
@@ -202,22 +220,22 @@ function formatObject(target, options) {
     )(isArrayLike(receiver));
     */
     const {
-        GroupPropertyEntry,
-        GroupPropertyKey,
-        GroupPrototype,
+        GroupKey,
+        GroupEntry,
+        GroupPrtype,
         GroupIterator,
-    } = createObjectGroups(target, opts);
-    const primitives = GroupPropertyEntry(`primitive`);
+    } = makeObjectGroups(target, opts, cyclicRefDict);
+    const primitives = GroupEntry(`primitive`);
     const groups = [
         primitives,
-        GroupPropertyEntry(`getter`, ({ value, descr }) => value != null && isGetter(descr)),
+        GroupEntry(`getter`, ({ value, descr }) => value != null && isGetter(descr)),
         GroupIterator(`iterator`),
-        GroupPropertyEntry(`object`, ({ value }) => isObj(value)),
-        GroupPropertyEntry(`array`, ({ value }) => isArrayLike(value)),
-        GroupPropertyKey(`function`, ({ value }) => typeof value === `function`),
-        GroupPropertyKey(`null`, ({ value }) => value === null),
-        GroupPropertyKey(`undefined`, ({ value }) => value === undefined),
-        GroupPrototype(`__proto__`),
+        GroupEntry(`object`, ({ value }) => isObj(value)),
+        GroupEntry(`array`, ({ value }) => isArrayLike(value)), // above object
+        GroupKey(`function`, ({ value }) => typeof value === `function`),
+        GroupKey(`null`, ({ value }) => value === null),
+        GroupKey(`undefined`, ({ value }) => value === undefined),
+        GroupPrtype(`__proto__`),
     ];
     const truthy = (arg) => ({ predicate }) => predicate(arg);
     const selectGroup = (property) => groups.find(truthy(property)) ?? primitives;
@@ -252,48 +270,56 @@ function formatObject(target, options) {
     return `(${length})${output}${origin}`;
 }
 
-function createObjectGroups(target, options) {
+function makeObjectGroups(target, options, cyclicRefDict) {
+    const shared = createObjectGroupBaseline(target, options, cyclicRefDict);
     return {
-        GroupPropertyEntry: partial(createObjectGroupPropertyEntry, target, options),
-        GroupPropertyKey: partial(createObjectGroupPropertyKey, target, options),
-        GroupPrototype: partial(createObjectGroupPrototype, target, options),
-        GroupIterator: partial(createObjectGroupIterator, target, options),
+        GroupKey: partial(createObjectGroupPropertyKey, shared),
+        GroupEntry: partial(createObjectGroupPropertyEntry, shared),
+        GroupPrtype: partial(createObjectGroupPrototype, shared),
+        GroupIterator: partial(createObjectGroupIterator, shared),
     };
 }
 
-function createObjectGroupBase(target, options, header) {
+function createObjectGroupBaseline(target, options, cyclicRefDict) {
     const opts = normalizeOptions(options);
-    const tagHeader = formatCustom(header, opts.header);
-    const tagPrefix = target.indenter.with(-1, opts.header).resolve.current;
     const { current } = target.indenter.resolve;
-    const mutableList = [];
+    const expander = (format, header, { length } = {}) => {
+        const tagHeader = formatCustom(header, opts.header);
+        const tagPrefix = target.indenter.with(-1, opts.header).resolve.current;
+        const count = Number.isInteger(length) ? `(${length})` : ``;
+        const expanded = format();
+        return `${tagPrefix}${tagHeader}${count}${current}${expanded}${current}`;
+    };
+    const createMutableList = () => {
+        const mutableList = [];
+        const verify = () => mutableList.length > 0;
+        const push = (item) => mutableList.push(item);
+        return { mutableList, verify, push };
+    };
     return {
+        cyclicRefDict,
+        target,
         opts,
-        tagHeader,
-        tagPrefix,
         current,
-        mutableList,
-        expand: (format) => `${tagPrefix}${tagHeader}(${mutableList.length})${current}${format()}${current}`,
-        verify: () => mutableList.length > 0,
-        push: (item) => mutableList.push(item),
+        expander,
+        createMutableList,
     };
 }
 
-function createObjectGroupPropertyKey(target, options, header, predicate = constant(false)) {
+function createObjectGroupPropertyKey(shared, header, predicate = constant(false)) {
     const {
         opts,
         current,
-        mutableList,
-        expand,
-        verify,
-        push,
-    } = createObjectGroupBase(target, options, header);
+        expander,
+        createMutableList,
+    } = shared;
+    const { mutableList, verify, push } = createMutableList();
     const keyToStr = ({ key, descr }) => formatAny(key) + formatDescriptor(descr, opts);
     const separate = ({ length }) => length < opts.newlineLimitGroup ? current : `,`;
     const format = () => mutableList.map(keyToStr).join(separate(mutableList));
     return {
         get expand() {
-            return expand(format);
+            return expander(format, header, mutableList);
         },
         get verify() {
             return verify();
@@ -303,35 +329,36 @@ function createObjectGroupPropertyKey(target, options, header, predicate = const
     };
 }
 
-function createObjectGroupPropertyEntry(target, options, header, predicate = constant(false)) {
+function createObjectGroupPropertyEntry(shared, header, predicate = constant(false)) {
     const {
+        cyclicRefDict,
+        target,
         opts,
         current,
-        mutableList,
-        expand,
-        verify,
-        push,
-    } = createObjectGroupBase(target, options, header);
-    const entryToStr = (padding) => ({ key, value, descr }, index) => {
+        expander,
+        createMutableList,
+    } = shared;
+    const { mutableList, verify, push } = createMutableList();
+    const entryToStr = (padding, { length }) => ({ key, value, descr }, index) => {
         const descriptor = formatDescriptor(descr, opts);
         const expanded = formatAny(new Target(
             value, key, target.path.concat(stringifyKey(key)), target.indenter.next(opts)
-        ), opts);
+        ), opts, cyclicRefDict);
         const hasNewline = expanded.includes(`\n`);
         const accessed = formatAny(key).padEnd(hasNewline ? 0 : padding);
-        const spacer = hasNewline && index < mutableList.length - 1 ? current : ``;
+        const spacer = hasNewline && index < length - 1 ? current : ``;
         return `${accessed} = ${expanded}${descriptor}${spacer}`;
     };
     const longestKey = (max, { key }) => max.length > key.length ? max : key;
     const format = () => {
         const longest = mutableList.reduce(longestKey, ``);
         const padding = formatAny(longest).length;
-        const toStr = entryToStr(padding);
+        const toStr = entryToStr(padding, mutableList);
         return mutableList.map(toStr).join(current);
     };
     return {
         get expand() {
-            return expand(format);
+            return expander(format, header, mutableList);
         },
         get verify() {
             return verify();
@@ -341,44 +368,15 @@ function createObjectGroupPropertyEntry(target, options, header, predicate = con
     };
 }
 
-function createObjectGroupPrototype(target, options, header) {
+function createObjectGroupIterator(shared, header) {
     const {
+        cyclicRefDict,
+        target,
         opts,
         current,
-    } = createObjectGroupBase(target, options, header);
-    const prtypeToStr = () => {
-        const accessed = formatCustom(header, opts);
-        const prtypeIndent = target.indenter.with(-1, opts.prtype);
-        const prtypeObject = Object.getPrototypeOf(target.data);
-        const prtypeRouted = formatCustom(prtypeObject, opts.prtype);
-        const prtypeTarget = new Target(
-            prtypeObject,
-            `${stringifyKey(target.name)}.${prtypeRouted}`,
-            target.path.concat(prtypeRouted),
-            prtypeIndent.next(opts),
-            target.receiver
-        );
-        const expanded = formatAny(prtypeTarget, opts);
-        return `${prtypeIndent.resolve.current}${accessed} = ${expanded}${current}`;
-    };
-    return {
-        get expand() {
-            return prtypeToStr();
-        },
-        verify: !opts.prtype.format.ignore,
-        push: constant(null),
-        predicate: constant(false),
-    };
-}
-
-function createObjectGroupIterator(target, options, header) {
-    const {
-        opts,
-        tagHeader,
-        tagPrefix,
-        current,
-    } = createObjectGroupBase(target, options, header);
-    let isIterable = false;
+        expander,
+    } = shared;
+    const isIterable = target.receiver[Symbol.iterator] === `function`;
     const iteratorToStr = () => {
         const size = target.receiver.size ?? target.receiver.length ?? 20; // is integer check
         const iter = target.receiver[Symbol.iterator]();
@@ -402,13 +400,46 @@ function createObjectGroupIterator(target, options, header) {
     };
     return {
         get expand() {
-            return `${tagPrefix}${tagHeader}${current}${iteratorToStr()}${current}`;
+            return expander(iteratorToStr, header);
         },
         get verify() {
             return isIterable;
         },
-        push: () => isIterable = true,
-        predicate: ({ key, value }) => key === Symbol.iterator && typeof value === `function`,
+        push: constant(null),
+        predicate: constant(false),
+    };
+}
+
+function createObjectGroupPrototype(shared, header) {
+    const {
+        cyclicRefDict,
+        target,
+        opts,
+        current,
+    } = shared;
+    const prtypeToStr = () => {
+        const accessed = formatCustom(header, opts);
+        const prtypeIndent = target.indenter.with(-1, opts.prtype);
+        const prtypeObject = Object.getPrototypeOf(target.data);
+        const prtypeRouted = formatCustom(prtypeObject, opts.prtype);
+        const prtypeTarget = new Target(
+            prtypeObject,
+            `${stringifyKey(target.name)}.${prtypeRouted}`,
+            target.path.concat(prtypeRouted),
+            prtypeIndent.next(opts),
+            target.receiver
+        );
+        const expanded = formatAny(prtypeTarget, opts, cyclicRefDict);
+        const prepend = prtypeIndent.resolve.current;
+        return `${prepend}${accessed} = ${expanded}${current}`;
+    };
+    return {
+        get expand() {
+            return prtypeToStr();
+        },
+        verify: !opts.prtype.format.ignore,
+        push: constant(null),
+        predicate: constant(false),
     };
 }
 
@@ -734,14 +765,21 @@ export function logCustom(options, logger, ...args) {
         const keys = isObj(value) ? Reflect.ownKeys(value) : [];
         return isCaptured(value, keys) ? setupObj(value, keys) : setupAny(value);
     };
+    const cyclicRefDict = new Map();
     const toStr = (value) => {
         try {
             const [prepend, name, data] = setup(value);
             const target = new Target(data, name, [name], indent.next(opts));
             return prepend + formatAny(target, opts, cyclicRefDict);
         } catch (error) {
+            //debugger;
             return formatAny(error);
         }
+    };
+    const toStrNoCatch = (value) => {
+        const [prepend, name, data] = setup(value);
+        const target = new Target(data, name, [name], indent.next(opts));
+        return prepend + formatAny(target, opts, cyclicRefDict);
     };
     const spacer = `\n\n${`-`.repeat(31)}\n\n`;
     const moduleName = ({ url }) => `[${new URL(url).pathname.slice(1)}]`;
