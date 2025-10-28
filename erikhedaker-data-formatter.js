@@ -73,25 +73,17 @@ const createIndentation = (() => {
         const { base, fill, size } = { ...defaults, ...options?.indent };
         return base.padEnd(size, fill);
     };
-    const resolve = (steps) => {
-        return {
-            current: steps.join(empty),
-            previous: steps.slice(0, -1).join(empty),
-        };
-    };
-    const replace = (steps) => (index, options) => {
-        const value = step(options);
-        const updated = steps.with(index, value);
-        return createIndentation(updated);
-    };
-    const increment = (steps) => (options) => {
-        const value = step(options);
-        const updated = steps.concat(value);
-        return createIndentation(updated);
-    };
+    const revise = (steps) => (value) => steps.with(-1, value);
+    const concat = (steps) => (value) => steps.concat(value);
+    const reiterate = (steps) => compose(createIndentation, revise(steps), step);
+    const increment = (steps) => compose(createIndentation, concat(steps), step);
+    const resolve = (steps) => ({
+        current: steps.join(empty),
+        previous: steps.slice(0, -1).join(empty),
+    });
     return (steps = fallback) => {
         return {
-            replace: replace(steps),
+            reiterate: reiterate(steps),
             increment: increment(steps),
             get resolve() {
                 return resolve(steps);
@@ -514,7 +506,7 @@ function createObjectGroupShared(target, options, cyclicRefDict) {
     const { current } = target.indent.resolve;
     const expander = (format, header, { length } = {}) => {
         const tagHeader = formatCustom(header, opts.header);
-        const tagPrefix = target.indent.replace(-1, opts.header).resolve.current;
+        const tagPrefix = target.indent.reiterate(opts.header).resolve.current;
         const count = Number.isInteger(length) ? `(${length})` : ``;
         const expanded = format();
         return `${tagPrefix}${tagHeader}${count}${current}${expanded}${current}`;
@@ -655,7 +647,7 @@ function createObjectGroupPrototype(shared, header) {
     } = shared;
     const prtypeToStr = () => {
         const accessed = formatCustom(header, opts);
-        const indent = target.indent.replace(-1, opts.prtype);
+        const indent = target.indent.reiterate(opts.prtype);
         const prtype = Object.getPrototypeOf(target.data);
         const routed = formatCustom(prtype, opts.prtype);
         const name = `${stringifyKey(target.name)}.${routed}`;
