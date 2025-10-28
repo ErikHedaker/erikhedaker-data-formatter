@@ -1,87 +1,8 @@
 'use strict';
 
-//-----#
-//-----# Combinator.Pure
-//-----#
-
-function identity(value) {
-    return value;
-}
-
-function constant(value) {
-    return () => value;
-}
-
-function flip(func) {
-    return (x) => (y) => func(y)(x);
-}
-
 
 //-----#
-//-----# Combinator.Variadic
-//-----#
-
-function thrush(...args) {
-    return (func) => func(...args);
-}
-
-function compose(...funcs) {
-    return (value) => funcs.reduceRight((acc, func) => func(acc), value);
-}
-
-function partial(func, ...prepend) {
-    return (...args) => func(...prepend, ...args);
-}
-
-function curry(func) {
-    const num = ({ length }) => length;
-    const arity = num(func);
-    const sated = (args) => num(args) >= arity;
-    const curried = (...args) => sated(args) ? func(...args) : partial(curried, ...args);
-    return curried;
-}
-
-
-//-----#
-//-----# Combinator.Array
-//-----#
-
-function map(func) {
-    return (arr) => arr.map(func);
-}
-
-function filter(func) {
-    return (arr) => arr.filter(func);
-}
-
-function join(joiner) {
-    return (arr) => arr.join(joiner);
-}
-
-
-//-----#
-//-----# Transformer
-//-----#
-
-function access(key) {
-    return (obj) => obj[key];
-}
-
-function equals(a) {
-    return (b) => a === b;
-}
-
-function instanceOf(type) {
-    return (value) => value instanceof type;
-}
-
-function typeOf(value) {
-    return typeof value;
-}
-
-
-//-----#
-//-----# Memoized
+//-----# Precomputation
 //-----#
 
 const optionsWithOverride = (() => {
@@ -171,17 +92,47 @@ export const formatAny = (() => {
     };
 })();
 
-function createPredicateTable(pairs) {
-    const template = ([predicate, value]) => ({ predicate, value });
-    return pairs.map(template);
-};
 
+//-----#
+//-----# Logger
+//-----#
 
-function createDispatchTable(pairs, fallback) {
-    const truthy = (arg) => ({ predicate }) => predicate(arg);
-    const table = createPredicateTable(pairs);
-    return (arg) => table.find(truthy(arg))?.value ?? fallback;
-};
+export function log(...args) {
+    return logCustom({ type: { format: { ignore: false } } }, console.log, ...args);
+}
+
+export function logCustom(options, logger, ...args) {
+    const opts = normalizeOptions(options);
+    const indent = new Indentation();
+    const isCaptured = (value, keys) => (
+        keys.length === 1 &&
+        strType(value) === `Object` &&
+        isObj(value[keys[0]])
+    );
+    const setupObj = (capturer, [name]) => [`${formatAny(name)} = `, name, capturer[name]];
+    const setupAny = (value) => [``, formatCustom(value, opts.type), value];
+    const setup = (value) => {
+        const keys = isObj(value) ? Reflect.ownKeys(value) : [];
+        return isCaptured(value, keys) ? setupObj(value, keys) : setupAny(value);
+    };
+    const cyclicRefDict = new Map();
+    const toStr = (value) => {
+            const [prepend, name, data] = setup(value);
+            const target = new Target(data, name, [name], indent.next(opts));
+        try {
+            return prepend + formatAny(target, opts, cyclicRefDict);
+        } catch (error) {
+            return formatAny(error);
+        }
+    };
+    const spacer = `\n\n${`-`.repeat(31)}\n\n`;
+    const moduleName = ({ url }) => `[${new URL(url).pathname.slice(1)}]`;
+    const reduceToStrNum = (acc, str, num) => `${acc}${spacer}[${num}]: ${str}`;
+    const header = moduleName(import.meta);
+    const output = args.map(toStr).reduce(reduceToStrNum, ``);
+    return logger(header + output);
+    // make objDone to Map, filter all entries above 1, print last
+}
 
 
 //-----#
@@ -222,9 +173,9 @@ function formatObject(target, options, cyclicRefDict = new Map()) {
     const {
         GroupKey,
         GroupEntry,
-        GroupPrtype,
         GroupIterator,
-    } = makeObjectGroups(target, opts, cyclicRefDict);
+        GroupPrtype,
+    } = createObjectGroups(target, opts, cyclicRefDict);
     const primitives = GroupEntry(`primitive`);
     const groups = [
         primitives,
@@ -270,17 +221,90 @@ function formatObject(target, options, cyclicRefDict = new Map()) {
     return `(${length})${output}${origin}`;
 }
 
-function makeObjectGroups(target, options, cyclicRefDict) {
-    const shared = createObjectGroupBaseline(target, options, cyclicRefDict);
+function formatArray(target, options, cyclicRefDict) {
+    const opts = normalizeOptions(options);
+    const indent = target.indenter.resolve;
+    const arr = Array.from(target.receiver);
+    const firstType = strType(arr[0]);
+    const isSameType = arr.every(item => strType(item) === firstType);
+    const newline = arr.length < opts.newlineLimitArray;
+    const [prefix, append] = !newline ? [` `, ` `] : [indent.current, `,${indent.previous}`];
+    const formatItem = (item, indexed) => formatAny(new Target(
+        item, indexed, target.path.concat(indexed), newline ? target.indenter.next(opts) : target.indenter
+    ), opts, cyclicRefDict);
+    const expanded = !arr.length ? `` : arr.map(
+        (item, index) => prefix + formatItem(item, `${target.name}[${index}]`)
+    ).join(`,`) + append;
+    const origin = !opts.originProperty ? `` : formatCustom(target.pathResolve(), opts.origin);
+    const itemType = !isSameType ? `` : `${firstType}: `;
+    return `(${itemType}${arr.length})${formatCustom(expanded, opts)}${origin}`;
+}
+
+function formatArrayLike() {
+    return null; // array item name to array[index]
+}
+
+
+//-----#
+//-----# Format.Simple
+//-----#
+
+function formatSymbol(sym, options = {}) {
+    const msg = sym.description;
+    const str = isKnownSymbol(sym) ? msg : (Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`);
+    return formatCustom(str, options);
+}
+
+function formatCustom(arg, options) {
+    const {
+        prefix = ``,
+        suffix = ``,
+        modify = identity,
+        ignore = false,
+    } = optionsWithOverride(options).format;
+    return ignore ? `` : `${prefix}${modify(arg)}${suffix}`;
+}
+
+
+//-----#
+//-----# String
+//-----#
+
+function stringifyKey(key, options) {
+    return typeof key === `symbol` ? formatSymbol(key, options) : key;
+}
+
+function strType(arg) {
+    return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
+}
+
+
+//-----#
+//-----# Object
+//-----#
+
+function createPredicateTable(pairs) {
+    const template = ([predicate, value]) => ({ predicate, value });
+    return pairs.map(template);
+};
+
+function createDispatchTable(pairs, fallback) {
+    const truthy = (arg) => ({ predicate }) => predicate(arg);
+    const table = createPredicateTable(pairs);
+    return (arg) => table.find(truthy(arg))?.value ?? fallback;
+};
+
+function createObjectGroups(target, options, cyclicRefDict) {
+    const shared = createObjectGroupShared(target, options, cyclicRefDict);
     return {
         GroupKey: partial(createObjectGroupPropertyKey, shared),
         GroupEntry: partial(createObjectGroupPropertyEntry, shared),
-        GroupPrtype: partial(createObjectGroupPrototype, shared),
         GroupIterator: partial(createObjectGroupIterator, shared),
+        GroupPrtype: partial(createObjectGroupPrototype, shared),
     };
 }
 
-function createObjectGroupBaseline(target, options, cyclicRefDict) {
+function createObjectGroupShared(target, options, cyclicRefDict) {
     const opts = normalizeOptions(options);
     const { current } = target.indenter.resolve;
     const expander = (format, header, { length } = {}) => {
@@ -443,66 +467,9 @@ function createObjectGroupPrototype(shared, header) {
     };
 }
 
-function formatArray(target, options, cyclicRefDict) {
-    const opts = normalizeOptions(options);
-    const indent = target.indenter.resolve;
-    const arr = Array.from(target.receiver);
-    const firstType = strType(arr[0]);
-    const isSameType = arr.every(item => strType(item) === firstType);
-    const newline = arr.length < opts.newlineLimitArray;
-    const [prefix, append] = !newline ? [` `, ` `] : [indent.current, `,${indent.previous}`];
-    const formatItem = (item, indexed) => formatAny(new Target(
-        item, indexed, target.path.concat(indexed), newline ? target.indenter.next(opts) : target.indenter
-    ), opts, cyclicRefDict);
-    const expanded = !arr.length ? `` : arr.map(
-        (item, index) => prefix + formatItem(item, `${target.name}[${index}]`)
-    ).join(`,`) + append;
-    const origin = !opts.originProperty ? `` : formatCustom(target.pathResolve(), opts.origin);
-    const itemType = !isSameType ? `` : `${firstType}: `;
-    return `(${itemType}${arr.length})${formatCustom(expanded, opts)}${origin}`;
-}
-
-function formatArrayLike() {
-    return null; // array item name to array[index]
-}
-
 
 //-----#
-//-----# Format.Simple
-//-----#
-
-function stringifyKey(key, options) {
-    return typeof key === `symbol` ? formatSymbol(key, options) : key;
-}
-
-function formatSymbol(sym, options = {}) {
-    const msg = sym.description;
-    const str = isKnownSymbol(sym) ? msg : (Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`);
-    return formatCustom(str, options);
-}
-
-function formatCustom(arg, options) {
-    const {
-        prefix = ``,
-        suffix = ``,
-        modify = identity,
-        ignore = false,
-    } = optionsWithOverride(options).format;
-    return ignore ? `` : `${prefix}${modify(arg)}${suffix}`;
-}
-
-
-//-----#
-//-----# Operation.String
-//-----#
-
-function strType(arg) {
-    return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
-}
-
-
-//-----#
-//-----# Operation.Boolean
+//-----# Boolean
 //-----#
 
 function isPrototype(arg) {
@@ -532,6 +499,87 @@ function isObj(arg) {
 function isGetter(desc = {}) {
     return typeof desc.get === `function`;
 }
+
+
+//-----#
+//-----# Combinator.Array
+//-----#
+
+function map(func) {
+    return (arr) => arr.map(func);
+}
+
+function filter(func) {
+    return (arr) => arr.filter(func);
+}
+
+function join(joiner) {
+    return (arr) => arr.join(joiner);
+}
+
+
+//-----#
+//-----# Combinator.Variadic
+//-----#
+
+function thrush(...args) {
+    return (func) => func(...args);
+}
+
+function compose(...funcs) {
+    return (value) => funcs.reduceRight((acc, func) => func(acc), value);
+}
+
+function partial(func, ...prepend) {
+    return (...args) => func(...prepend, ...args);
+}
+
+function curry(func) {
+    const num = ({ length }) => length;
+    const arity = num(func);
+    const sated = (args) => num(args) >= arity;
+    const curried = (...args) => sated(args) ? func(...args) : partial(curried, ...args);
+    return curried;
+}
+
+
+//-----#
+//-----# Combinator.Formal
+//-----#
+
+function identity(value) {
+    return value;
+}
+
+function constant(value) {
+    return () => value;
+}
+
+function flip(func) {
+    return (x) => (y) => func(y)(x);
+}
+
+
+//-----#
+//-----# Combinator.Domain
+//-----#
+
+function access(key) {
+    return (obj) => obj[key];
+}
+
+function equals(x) {
+    return (y) => x === y;
+}
+
+function instanceOf(type) {
+    return (value) => value instanceof type;
+}
+
+function typeOf(value) {
+    return typeof value;
+}
+
 
 //-----#
 //-----# Class
@@ -684,8 +732,10 @@ function createDefaultOptions() { // existing object blocklist
         },
     };
 }
+
 const normalizeOptionsDefault = createDefaultOptions();
 const normalized = new Set([normalizeOptionsDefault]);
+
 export function normalizeOptions(arg) {
     if (!isObj(arg)) {
         return normalizeOptionsDefault;
@@ -698,6 +748,7 @@ export function normalizeOptions(arg) {
     normalized.add(opts);
     return opts;
 }
+
 export function deepMergeCopy(priority, fallback, verifier) {
     const verify = Boolean(verifier) ? verifier : (closure => ({
         priority: closure(new Set()),
@@ -740,52 +791,4 @@ export function deepMergeCopy(priority, fallback, verifier) {
     ])).reduce((copy, key) => (
         (copy[key] = deepMergeCopy(priority[key], fallback[key], verify)), copy
     ), {});
-}
-
-
-//-----#
-//-----# Logger
-//-----#
-
-export function log(...args) {
-    return logCustom({ type: { format: { ignore: false } } }, console.log, ...args);
-}
-
-export function logCustom(options, logger, ...args) {
-    const opts = normalizeOptions(options);
-    const indent = new Indentation();
-    const isCaptured = (value, keys) => (
-        keys.length === 1 &&
-        strType(value) === `Object` &&
-        isObj(value[keys[0]])
-    );
-    const setupObj = (capturer, [name]) => [`${formatAny(name)} = `, name, capturer[name]];
-    const setupAny = (value) => [``, formatCustom(value, opts.type), value];
-    const setup = (value) => {
-        const keys = isObj(value) ? Reflect.ownKeys(value) : [];
-        return isCaptured(value, keys) ? setupObj(value, keys) : setupAny(value);
-    };
-    const cyclicRefDict = new Map();
-    const toStr = (value) => {
-        try {
-            const [prepend, name, data] = setup(value);
-            const target = new Target(data, name, [name], indent.next(opts));
-            return prepend + formatAny(target, opts, cyclicRefDict);
-        } catch (error) {
-            //debugger;
-            return formatAny(error);
-        }
-    };
-    const toStrNoCatch = (value) => {
-        const [prepend, name, data] = setup(value);
-        const target = new Target(data, name, [name], indent.next(opts));
-        return prepend + formatAny(target, opts, cyclicRefDict);
-    };
-    const spacer = `\n\n${`-`.repeat(31)}\n\n`;
-    const moduleName = ({ url }) => `[${new URL(url).pathname.slice(1)}]`;
-    const reduceToStrNum = (acc, str, num) => `${acc}${spacer}[${num}]: ${str}`;
-    const header = moduleName(import.meta);
-    const output = args.map(toStr).reduce(reduceToStrNum, ``);
-    return logger(header + output);
-    // make objDone to Map, filter all entries above 1, print last
 }
