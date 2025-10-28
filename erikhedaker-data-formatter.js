@@ -117,8 +117,8 @@ export function logCustom(options, logger, ...args) {
     };
     const cyclicRefDict = new Map();
     const toStr = (value) => {
-            const [prepend, name, data] = setup(value);
-            const target = new Target(data, name, [name], indent.next(opts));
+        const [prepend, name, data] = setup(value);
+        const target = new Target(data, name, [name], indent.next(opts));
         try {
             return prepend + formatAny(target, opts, cyclicRefDict);
         } catch (error) {
@@ -229,12 +229,14 @@ function formatArray(target, options, cyclicRefDict) {
     const isSameType = arr.every(item => strType(item) === firstType);
     const newline = arr.length < opts.newlineLimitArray;
     const [prefix, append] = !newline ? [` `, ` `] : [indent.current, `,${indent.previous}`];
-    const formatItem = (item, indexed) => formatAny(new Target(
-        item, indexed, target.path.concat(indexed), newline ? target.indenter.next(opts) : target.indenter
-    ), opts, cyclicRefDict);
-    const expanded = !arr.length ? `` : arr.map(
-        (item, index) => prefix + formatItem(item, `${target.name}[${index}]`)
-    ).join(`,`) + append;
+    const formatItem = (item, index) => {
+        const nextName = `${target.name}[${index}]`;
+        const nextPath = target.path.concat(nextName);
+        const nextIndenter = newline ? target.indenter.next(opts) : target.indenter;
+        const nextTarget = new Target(item, nextName, nextPath, nextIndenter);
+        return prefix + formatAny(nextTarget, opts, cyclicRefDict);
+    };
+    const expanded = !arr.length ? `` : arr.map(formatItem).join(`,`) + append;
     const origin = !opts.originProperty ? `` : formatCustom(target.pathResolve(), opts.origin);
     const itemType = !isSameType ? `` : `${firstType}: `;
     return `(${itemType}${arr.length})${formatCustom(expanded, opts)}${origin}`;
@@ -364,17 +366,14 @@ function createObjectGroupPropertyEntry(shared, header, predicate = constant(fal
     } = shared;
     const { mutableList, verify, push } = createMutableList();
     const entryToStr = (padding, { length }) => ({ key, value, descr }, index) => {
-        const descriptor = formatDescriptor(descr, opts);
-        const subsequent = new Target(
-            value,
-            key,
-            target.path.concat(stringifyKey(key)),
-            target.indenter.next(opts),
-        );
-        const expanded = formatAny(subsequent, opts, cyclicRefDict);
+        const nextPath = target.path.concat(stringifyKey(key));
+        const nextIndenter = target.indenter.next(opts);
+        const nextTarget = new Target(value, key, nextPath, nextIndenter);
+        const expanded = formatAny(nextTarget, opts, cyclicRefDict);
         const hasNewline = expanded.includes(`\n`);
         const accessed = formatAny(key).padEnd(hasNewline ? 0 : padding);
         const spacer = hasNewline && index < length - 1 ? current : ``;
+        const descriptor = formatDescriptor(descr, opts);
         return `${accessed} = ${expanded}${descriptor}${spacer}`;
     };
     const longestKey = (max, { key }) => max.length > key.length ? max : key;
@@ -406,21 +405,27 @@ function createObjectGroupIterator(shared, header) {
     } = shared;
     const isIterable = target.receiver[Symbol.iterator] === `function`;
     const iteratorToStr = () => {
-        const size = target.receiver.size ?? target.receiver.length ?? 20; // is integer check
-        const iter = target.receiver[Symbol.iterator]();
-        const next = target.indenter.next(opts);
-        const prtypeChain = (value) => isObj(value) && value !== Object.prototype ? [value].concat(
-            prtypeChain(Object.getPrototypeOf(value))
-        ) : [];
+        const len = target.receiver.size ?? target.receiver.length ?? 20; // is integer check
+        const iterator = target.receiver[Symbol.iterator]();
+        const iterIndenter = target.indenter.next(opts);
+        const prtypeChain = function recurse(value) {
+            if (!isObj(value) || value === Object.prototype) {
+                return [];
+            }
+            return [value].concat(recurse(Object.getPrototypeOf(value)));
+        };
         const accessed = formatSymbol(Symbol.iterator, opts);
-        const expanded = formatAny(new Target(
-            target.receiver[Symbol.iterator], accessed, target.path.concat(accessed), next
-        ), opts, cyclicRefDict);
-        const entries = formatAny(new Target( // opts: skip origin, add nested element types
-            Array.from(iter.take(size)), accessed, target.path.concat(accessed), next
-        ), { originProperty: false }, cyclicRefDict); // pass rest of opts after fixing deepMerge Array merge
-        const type = formatCustom(iter, opts.type);
-        const prtypes = prtypeChain(Object.getPrototypeOf(iter)).map(
+        const iterFunc = target.receiver[Symbol.iterator];
+        const iterPath = target.path.concat(accessed);
+        const iterTarget = new Target(iterFunc, accessed, iterPath, iterIndenter);
+        const expanded = formatAny(iterTarget, opts, cyclicRefDict);
+        const contentArray = Array.from(iterator.take(len));
+        const contentTarget = new Target(contentArray, accessed, iterPath, iterIndenter);
+        // opts: skip origin, add nested element types
+        // pass rest of opts after fixing deepMerge Array merge
+        const entries = formatAny(contentTarget, { originProperty: false }, cyclicRefDict);
+        const type = formatCustom(iterator, opts.type);
+        const prtypes = prtypeChain(Object.getPrototypeOf(iterator)).map(
             obj => formatCustom(obj, opts.prtype)
         ).join(`.`);
         const invoked = formatCustom(`invoked-( ${type}.${prtypes} )`, opts);
@@ -447,18 +452,14 @@ function createObjectGroupPrototype(shared, header) {
     } = shared;
     const prtypeToStr = () => {
         const accessed = formatCustom(header, opts);
-        const prtypeIndent = target.indenter.with(-1, opts.prtype);
-        const prtypeObject = Object.getPrototypeOf(target.data);
-        const prtypeRouted = formatCustom(prtypeObject, opts.prtype);
-        const prtypeTarget = new Target(
-            prtypeObject,
-            `${stringifyKey(target.name)}.${prtypeRouted}`,
-            target.path.concat(prtypeRouted),
-            prtypeIndent.next(opts),
-            target.receiver
-        );
+        const indenter = target.indenter.with(-1, opts.prtype);
+        const prtype = Object.getPrototypeOf(target.data);
+        const routed = formatCustom(prtype, opts.prtype);
+        const name = `${stringifyKey(target.name)}.${routed}`;
+        const path = target.path.concat(routed);
+        const prtypeTarget = new Target(prtype, name, path, indenter.next(opts), target.receiver);
         const expanded = formatAny(prtypeTarget, opts, cyclicRefDict);
-        const prepend = prtypeIndent.resolve.current;
+        const prepend = indenter.resolve.current;
         return `${prepend}${accessed} = ${expanded}${current}`;
     };
     return {
