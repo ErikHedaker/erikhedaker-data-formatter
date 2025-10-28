@@ -5,6 +5,16 @@
 //-----# Precomputation
 //-----#
 
+function formatCustom(value, options) { // Precomputation
+    const {
+        prefix = ``,
+        suffix = ``,
+        modify = identity,
+        ignore = false,
+    } = options?.format ?? {};
+    return ignore ? `` : `${prefix}${modify(value)}${suffix}`;
+}
+
 const normalizeOptionsDefault = createDefaultOptions();
 const normalized = new Set([normalizeOptionsDefault]);
 
@@ -73,10 +83,9 @@ const createIndentation = (() => {
         const { base, fill, size } = { ...defaults, ...options?.indent };
         return base.padEnd(size, fill);
     };
-    const revise = (steps) => (value) => steps.with(-1, value);
-    const concat = (steps) => (value) => steps.concat(value);
-    const reiterate = (steps) => compose(createIndentation, revise(steps), step);
-    const increment = (steps) => compose(createIndentation, concat(steps), step);
+    const clone = (copy) => compose(createIndentation, copy, step);
+    const reiterate = (steps) => clone((value) => steps.with(-1, value));
+    const increment = (steps) => clone((value) => steps.concat(value));
     const resolve = (steps) => ({
         current: steps.join(empty),
         previous: steps.slice(0, -1).join(empty),
@@ -333,20 +342,10 @@ function formatArrayLike() {
 //-----# Format.Simple
 //-----#
 
-function formatSymbol(sym, options = {}) {
+function formatSymbol(sym, options) {
     const msg = sym.description;
     const str = isKnownSymbol(sym) ? msg : (Boolean(msg) ? `Symbol("${msg}")` : `Symbol()`);
     return formatCustom(str, options);
-}
-
-function formatCustom(value, options) {
-    const {
-        prefix = ``,
-        suffix = ``,
-        modify = identity,
-        ignore = false,
-    } = options?.format ?? {};
-    return ignore ? `` : `${prefix}${modify(value)}${suffix}`;
 }
 
 
