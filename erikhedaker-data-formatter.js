@@ -71,17 +71,17 @@ export const formatAny = (() => {
         `undefined`,
         `null`,
     ]);
-    return (arg, options, cyclicRefDict) => {
+    return (value, options, cyclicRefDict) => {
         const opts = normalizeOptions(options);
-        const fastPathArg = typeof arg;
+        const fastPathArg = typeof value;
         if (fastPathArg === `string`) {
-            return formatCustom(`"${arg}"`, opts);
+            return formatCustom(`"${value}"`, opts);
         }
         if (fastPathSet.has(fastPathArg)) {
-            return formatCustom(String(arg), opts);
+            return formatCustom(String(value), opts);
         }
 
-        const target = Target.normalize(arg);
+        const target = Target.normalize(value);
         const arbitrate = dTableFormatArbiter(target);
         const arbitrated = arbitrate(target);
         const getFormatArgs = dTableFormat(arbitrated);
@@ -149,7 +149,7 @@ function formatObject(target, options, cyclicRefDict = new Map()) {
     const prtype = Object.getPrototypeOf(target.data);
     const prtypeRef = cyclicRefDict.get(prtype);
     const objRef = cyclicRefDict.get(target.data);
-    const isExcluded = arg => opts.prtype.exclude.some(obj => obj === arg);
+    const isExcluded = value => opts.prtype.exclude.some(obj => obj === value);
     const filtered = () => formatCustom(`is-filtered`, opts.object);
     const formatCopyOf = ([path]) => ( // better name
         str => formatCustom(indent.current + str + indent.previous, opts.object)
@@ -188,7 +188,7 @@ function formatObject(target, options, cyclicRefDict = new Map()) {
         GroupKey(`undefined`, ({ value }) => value === undefined),
         GroupPrtype(`__proto__`),
     ];
-    const truthy = (arg) => ({ predicate }) => predicate(arg);
+    const truthy = (value) => ({ predicate }) => predicate(value);
     const selectGroup = (property) => groups.find(truthy(property)) ?? primitives;
     const mutateGroup = (property) => selectGroup(property).push(property);
     const propertyWhenError = (key, error) => ({ key, value: error, descr: undefined });
@@ -255,14 +255,14 @@ function formatSymbol(sym, options = {}) {
     return formatCustom(str, options);
 }
 
-function formatCustom(arg, options) {
+function formatCustom(value, options) {
     const {
         prefix = ``,
         suffix = ``,
         modify = identity,
         ignore = false,
     } = optionsWithOverride(options).format;
-    return ignore ? `` : `${prefix}${modify(arg)}${suffix}`;
+    return ignore ? `` : `${prefix}${modify(value)}${suffix}`;
 }
 
 
@@ -274,8 +274,8 @@ function stringifyKey(key, options) {
     return typeof key === `symbol` ? formatSymbol(key, options) : key;
 }
 
-function strType(arg) {
-    return isObj(arg) ? Object.prototype.toString.call(arg).slice(8, -1) : typeof arg;
+function strType(value) {
+    return isObj(value) ? Object.prototype.toString.call(value).slice(8, -1) : typeof value;
 }
 
 
@@ -284,14 +284,14 @@ function strType(arg) {
 //-----#
 
 function createPredicateTable(pairs) {
-    const template = ([predicate, value]) => ({ predicate, value });
+    const template = ([predicate, forward]) => ({ predicate, forward });
     return pairs.map(template);
 };
 
 function createDispatchTable(pairs, fallback) {
-    const truthy = (arg) => ({ predicate }) => predicate(arg);
+    const truthy = (value) => ({ predicate }) => predicate(value);
     const table = createPredicateTable(pairs);
-    return (arg) => table.find(truthy(arg))?.value ?? fallback;
+    return (value) => table.find(truthy(value))?.forward ?? fallback;
 };
 
 function createObjectGroups(target, options, cyclicRefDict) {
@@ -365,9 +365,13 @@ function createObjectGroupPropertyEntry(shared, header, predicate = constant(fal
     const { mutableList, verify, push } = createMutableList();
     const entryToStr = (padding, { length }) => ({ key, value, descr }, index) => {
         const descriptor = formatDescriptor(descr, opts);
-        const expanded = formatAny(new Target(
-            value, key, target.path.concat(stringifyKey(key)), target.indenter.next(opts)
-        ), opts, cyclicRefDict);
+        const subsequent = new Target(
+            value,
+            key,
+            target.path.concat(stringifyKey(key)),
+            target.indenter.next(opts),
+        );
+        const expanded = formatAny(subsequent, opts, cyclicRefDict);
         const hasNewline = expanded.includes(`\n`);
         const accessed = formatAny(key).padEnd(hasNewline ? 0 : padding);
         const spacer = hasNewline && index < length - 1 ? current : ``;
@@ -405,8 +409,8 @@ function createObjectGroupIterator(shared, header) {
         const size = target.receiver.size ?? target.receiver.length ?? 20; // is integer check
         const iter = target.receiver[Symbol.iterator]();
         const next = target.indenter.next(opts);
-        const prtypeChain = (arg) => isObj(arg) && arg !== Object.prototype ? [arg].concat(
-            prtypeChain(Object.getPrototypeOf(arg))
+        const prtypeChain = (value) => isObj(value) && value !== Object.prototype ? [value].concat(
+            prtypeChain(Object.getPrototypeOf(value))
         ) : [];
         const accessed = formatSymbol(Symbol.iterator, opts);
         const expanded = formatAny(new Target(
@@ -472,28 +476,28 @@ function createObjectGroupPrototype(shared, header) {
 //-----# Boolean
 //-----#
 
-function isPrototype(arg) {
-    return isObj(arg) && arg === arg.constructor.prototype;
+function isPrototype(value) {
+    return isObj(value) && value === value.constructor.prototype;
 }
 
-function isArrayOnly(arg, length) {
-    return Array.isArray(arg) && isArrayMinimal(arg, length);
+function isArrayOnly(value, length) {
+    return Array.isArray(value) && isArrayMinimal(value, length);
 }
 
-function isArrayMinimal(arg, length) {
-    return isArrayLike(arg) && arg.length === (length ?? Reflect.ownKeys(arg).length) - 1;
+function isArrayMinimal(value, length) {
+    return isArrayLike(value) && value.length === (length ?? Reflect.ownKeys(value).length) - 1;
 }
 
-function isArrayLike(arg) {
-    return isObj(arg) && Number.isInteger(arg.length) && arg.length >= 0;
+function isArrayLike(value) {
+    return isObj(value) && Number.isInteger(value.length) && value.length >= 0;
 }
 
-function isIterable(arg) {
-    return isObj(arg) && typeof arg[Symbol.iterator] === `function`;
+function isIterable(value) {
+    return isObj(value) && typeof value[Symbol.iterator] === `function`;
 }
 
-function isObj(arg) {
-    return Boolean(arg) && typeof arg === `object`;
+function isObj(value) {
+    return Boolean(value) && typeof value === `object`;
 }
 
 function isGetter(desc = {}) {
@@ -609,23 +613,23 @@ class Target { // Overhaul to Metadata class / Context / State / TraversalState 
     get receiver() {
         return this.#receiver ?? this.data;
     }
-    set name(arg) {
-        this.#name = arg;
+    set name(value) {
+        this.#name = value;
     }
-    set path(arg) {
-        this.#path = arg;
+    set path(value) {
+        this.#path = value;
     }
-    set indenter(arg) {
-        this.#indenter = arg;
+    set indenter(value) {
+        this.#indenter = value;
     }
-    set receiver(arg) {
-        this.#receiver = arg;
+    set receiver(value) {
+        this.#receiver = value;
     }
     pathResolve() {
         return isArrayLike(this.path) ? this.path.join(`.`) : this.name;
     }
-    static normalize(arg) {
-        return arg instanceof this ? arg : new this(arg);
+    static normalize(value) {
+        return value instanceof this ? value : new this(value);
     }
 }
 
@@ -736,15 +740,15 @@ function createDefaultOptions() { // existing object blocklist
 const normalizeOptionsDefault = createDefaultOptions();
 const normalized = new Set([normalizeOptionsDefault]);
 
-export function normalizeOptions(arg) {
-    if (!isObj(arg)) {
+export function normalizeOptions(value) {
+    if (!isObj(value)) {
         return normalizeOptionsDefault;
     }
-    if (normalized.has(arg)) {
-        return arg;
+    if (normalized.has(value)) {
+        return value;
     }
     // add "known" deepMerge that only merge existing defaults keys
-    const opts = deepMergeCopy(arg, normalizeOptionsDefault);
+    const opts = deepMergeCopy(value, normalizeOptionsDefault);
     normalized.add(opts);
     return opts;
 }
