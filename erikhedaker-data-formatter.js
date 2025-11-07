@@ -2,7 +2,7 @@
 
 
 //-----#
-//-----# Precomputation
+//-----# TODO
 //-----#
 
 function formatCustom(value, options) { // Precomputation
@@ -15,23 +15,24 @@ function formatCustom(value, options) { // Precomputation
     return ignore ? `` : `${prefix}${modify(value)}${suffix}`;
 }
 
-const normalizeOptionsDefault = createDefaultOptions();
-const normalized = new Set([normalizeOptionsDefault]);
+const normalizeOptions = (() => {
+    const defaults = createDefaultOptions();
+    const memoized = new Map([[defaults, defaults]]);
+    return (options) => {
+        if (memoized.has(options)) {
+            return memoized.get(options);
+        }
+        if (!isObj(options)) {
+            return defaults;
+        }
+        const opts = deepCopyMerge(options, defaults);
+        memoized.set(options, opts);
+        memoized.set(opts, opts);
+        return opts;
+    };
+})();
 
-function normalizeOptions(value) {
-    if (!isObj(value)) {
-        return normalizeOptionsDefault;
-    }
-    if (normalized.has(value)) {
-        return value;
-    }
-    // add "known" deepMerge that only merge existing defaults keys
-    const opts = deepMergeCopy(value, normalizeOptionsDefault);
-    normalized.add(opts);
-    return opts;
-}
-
-function deepMergeCopy(priority, fallback, verifier) {
+function deepCopyMerge(priority, fallback, verifier) {
     const verify = Boolean(verifier) ? verifier : (closure => ({
         priority: closure(new Set()),
         fallback: closure(new Set()),
@@ -44,48 +45,155 @@ function deepMergeCopy(priority, fallback, verifier) {
         }
     });
     if (priority === undefined) {
-        return fallback === undefined ? undefined : deepMergeCopy(fallback, undefined, verify);
+        return fallback === undefined ? undefined : deepCopyMerge(fallback, undefined, verify);
     }
     if (!isObj(priority) || isPrototype(priority)) {
         return priority;
     }
     if (isPrototype(fallback)) {
-        return deepMergeCopy(priority, undefined, verify);
+        return deepCopyMerge(priority, undefined, verify);
     }
     verify.priority(priority);
     verify.fallback(fallback);
     if (isArrayOnly(priority)) { // merge items if both are objects with same index
         return priority.concat(
             isArrayOnly(fallback) ? fallback.slice(priority.length) : []
-        ).map(item => deepMergeCopy(item, undefined, verify));
+        ).map(item => deepCopyMerge(item, undefined, verify));
     }
     if (!isObj(fallback)) {
         if (isIterable(priority)) {
             return priority; // shallow copy for iterable like Map, fix later
         }
         return Reflect.ownKeys(priority).reduce((copy, key) => ( // cursed syntax btw
-            copy[key] = deepMergeCopy(priority[key], undefined, verify), copy
+            copy[key] = deepCopyMerge(priority[key], undefined, verify), copy
         ), {});
     }
     return Array.from(new Set([
         ...Reflect.ownKeys(priority),
         ...Reflect.ownKeys(fallback),
     ])).reduce((copy, key) => (
-        (copy[key] = deepMergeCopy(priority[key], fallback[key], verify)), copy
+        (copy[key] = deepCopyMerge(priority[key], fallback[key], verify)), copy
     ), {});
 }
+
+
+//-----#
+//-----# Precomputation
+//-----#
+
+const formatObject = (() => {
+    /*
+    const isArrayItem = (isParentArray =>
+        ([key]) => isParentArray && parseInt(String(key)) >= 0
+    )(isArrayLike(receiver));
+    */
+
+    //const isExcluded = (value) => isPrototype(value) && opts.prtype.exclude.some((name) => name === strType(value));
+    //const isExcluded = value => opts.prtype.exclude.some(obj => obj === value);
+    const isTypeExcluded = (value, options) => {
+        const excludeTypes = options.prtype.exclude;
+        return excludeTypes.some((type) => type === strType(value));
+    };
+    const wasFiltered = (options) => formatCustom(`is-filtered`, options.object);
+    const formatCyclicReference = ([path], indented, options) => {
+        const pathing = path.join(`.`);
+        const output = `is-copy-of-( ${pathing} )`;
+        return formatCustom(indented.current + output + indented.previous, options.object);
+    };
+
+
+    return (target, options, cyclicRefDict = new Map()) => {
+        //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
+        //unroll iterator, filter keys if items contain keys from object
+        const opts = normalizeOptions(options);
+        const indented = target.indent.resolve;
+        const keys = Reflect.ownKeys(target.data); // Set // add array and iterable keys into Set, filter keys based on that
+        const length = keys.length;
+        const prtype = Object.getPrototypeOf(target.data);
+        const prtypeRef = cyclicRefDict.get(prtype);
+        const objRef = cyclicRefDict.get(target.data);
+        //const isExcluded = (value) => isPrototype(value) && opts.prtype.exclude.some((name) => name === strType(value));
+        const isExcluded = value => opts.prtype.exclude.some(obj => obj === value);
+        const filtered = () => formatCustom(`is-filtered`, opts.object);
+        const formatCopyOf = ([path]) => ( // better name
+            str => formatCustom(indented.current + str + indented.previous, opts.object)
+        )(`is-copy-of-( ${path.join(`.`)} )`);
+        const copyOf = paths => () => (paths.push(target.path), formatCopyOf(paths)); // better name
+        const formatEarlyReturn = [
+            [filtered, isExcluded(target.data)],
+            [filtered, isExcluded(prtype) && !length],
+            [copyOf(objRef), Boolean(objRef)],
+            [copyOf(prtypeRef), Boolean(prtypeRef) && !length],
+            [() => formatArray(target, opts, cyclicRefDict), isArrayOnly(target.receiver, length)],
+        ].find(([, predicate]) => predicate)?.[0];
+        if (Boolean(formatEarlyReturn)) {
+            return formatEarlyReturn();
+        }
+        const {
+            GroupKey,
+            GroupEntry,
+            GroupIterator,
+            GroupPrtype,
+        } = createObjectGroups(target, opts, cyclicRefDict);
+        const primitives = GroupEntry(`primitive`);
+        const groups = [
+            primitives,
+            GroupEntry(`getter`, ({ value, descr }) => value != null && isGetter(descr)),
+            GroupIterator(`iterator`),
+            GroupEntry(`object`, ({ value }) => isObj(value)),
+            GroupEntry(`array`, ({ value }) => isArrayLike(value)), // above object
+            GroupKey(`function`, ({ value }) => typeof value === `function`),
+            GroupKey(`null`, ({ value }) => value === null),
+            GroupKey(`undefined`, ({ value }) => value === undefined),
+            GroupPrtype(`__proto__`),
+        ];
+        const truthy = (value) => ({ predicate }) => predicate(value);
+        const selectGroup = (property) => groups.find(truthy(property)) ?? primitives;
+        const mutateGroup = (property) => selectGroup(property).push(property);
+        const propertyWhenError = (key, error) => ({ key, value: error, descr: undefined });
+        const propertyFromKeyThrowable = (key) => ({
+            key,
+            value: Reflect.get(target.data, key, target.receiver),
+            descr: Reflect.getOwnPropertyDescriptor(target.data, key),
+        });
+        const propertyFromKey = (key) => {
+            try {
+                return propertyFromKeyThrowable(key);
+            } catch (error) {
+                return propertyWhenError(key, error);
+            }
+        };
+        const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
+        const propertySorter = (a, b) =>
+            ternaryCmp(typeof a.key, typeof b.key) ||
+            ternaryCmp(isObj(a.value), isObj(b.value)) ||
+            ternaryCmp(typeof a.value, typeof b.value) ||
+            ternaryCmp(String(a.key), String(b.key));
+        cyclicRefDict.set(target.data, [target.path]);
+        keys.map(propertyFromKey).toSorted(propertySorter).forEach(mutateGroup);
+        const expanded = groups.filter((group) => group.verify).map((group) => group.expand).join(``);
+        const [origin, prefix, suffix] = !expanded.includes(`\n`) ? [``, ``, ``] : [formatCustom(
+            target.data === target.receiver ? target.pathResolve() : target.name,
+            opts.origin,
+        ), indented.current, indented.previous];
+        const output = formatCustom(prefix + expanded + suffix, opts.object);
+        return `(${length})${output}${origin}`;
+    };
+})();
+
 
 const createIndentation = (() => {
     const empty = ``;
     const fallback = [`\n`];
     const defaults = normalizeOptions().indent;
-    const step = (options) => {
+    const step = (options = defaults) => {
         const { base, fill, size } = { ...defaults, ...options?.indent };
+        //const { base, fill, size } = normalizeOptions(options).indent;
         return base.padEnd(size, fill);
     };
-    const clone = (copy) => compose(createIndentation, copy, step);
-    const reiterate = (steps) => clone((value) => steps.with(-1, value));
-    const increment = (steps) => clone((value) => steps.concat(value));
+    const copy = (clone) => compose(createIndentation, clone, step);
+    const reiterate = (steps) => copy((value) => steps.with(-1, value));
+    const increment = (steps) => copy((value) => steps.concat(value));
     const resolve = (steps) => ({
         current: steps.join(empty),
         previous: steps.slice(0, -1).join(empty),
@@ -162,11 +270,13 @@ export const formatAny = (() => {
         `undefined`,
         `null`,
     ]);
+    const stringOut = (value, opts) => formatCustom(`"${value}"`, opts);
+    const typePrefix = (target, opts) => formatCustom(target.data, opts.type);
     return (value, options, cyclicRefDict) => {
         const opts = normalizeOptions(options);
         const fastPathArg = typeof value;
         if (fastPathArg === `string`) {
-            return formatCustom(`"${value}"`, opts);
+            return stringOut(value, opts);
         }
         if (fastPathSet.has(fastPathArg)) {
             return formatCustom(String(value), opts);
@@ -177,15 +287,13 @@ export const formatAny = (() => {
         const arbitrated = arbitrate(target);
         const getFormatArgs = dTableFormat(arbitrated);
         const [format, ...formatArgs] = getFormatArgs(target, opts, cyclicRefDict);
-        const expanded = format(...formatArgs);
-        const dataType = formatCustom(target.data, opts.type);
-        return dataType + expanded;
+        return typePrefix(target, opts) + format(...formatArgs);
     };
 })();
 
 
 //-----#
-//-----# Logger
+//-----# Mutation
 //-----#
 
 export function log(...args) {
@@ -229,88 +337,6 @@ export function logCustom(options, logger, ...args) {
 //-----#
 //-----# Format.Complex
 //-----#
-
-function formatObject(target, options, cyclicRefDict = new Map()) {
-    //const unrolled = Array.from(receiver[Symbol.iterator]().take(receiver.size || receiver.length || 50));
-    //unroll iterator, filter keys if items contain keys from object
-    const opts = normalizeOptions(options);
-    const indented = target.indent.resolve;
-    const keys = Reflect.ownKeys(target.data); // Set // add array and iterable keys into Set, filter keys based on that
-    const length = keys.length;
-    const prtype = Object.getPrototypeOf(target.data);
-    const prtypeRef = cyclicRefDict.get(prtype);
-    const objRef = cyclicRefDict.get(target.data);
-    const isExcluded = value => opts.prtype.exclude.some(obj => obj === value);
-    const filtered = () => formatCustom(`is-filtered`, opts.object);
-    const formatCopyOf = ([path]) => ( // better name
-        str => formatCustom(indented.current + str + indented.previous, opts.object)
-    )(`is-copy-of-( ${path.join(`.`)} )`);
-    const copyOf = paths => () => (paths.push(target.path), formatCopyOf(paths)); // better name
-    const formatEarlyReturn = [
-        [filtered, isExcluded(target.data)],
-        [filtered, isExcluded(prtype) && !length],
-        [copyOf(objRef), Boolean(objRef)],
-        [copyOf(prtypeRef), Boolean(prtypeRef) && !length],
-        [() => formatArray(target, opts, cyclicRefDict), isArrayOnly(target.receiver, length)],
-    ].find(([, predicate]) => predicate)?.[0];
-    if (Boolean(formatEarlyReturn)) {
-        return formatEarlyReturn();
-    }
-    /*
-    const isArrayItem = (isParentArray =>
-        ([key]) => isParentArray && parseInt(String(key)) >= 0
-    )(isArrayLike(receiver));
-    */
-    const {
-        GroupKey,
-        GroupEntry,
-        GroupIterator,
-        GroupPrtype,
-    } = createObjectGroups(target, opts, cyclicRefDict);
-    const primitives = GroupEntry(`primitive`);
-    const groups = [
-        primitives,
-        GroupEntry(`getter`, ({ value, descr }) => value != null && isGetter(descr)),
-        GroupIterator(`iterator`),
-        GroupEntry(`object`, ({ value }) => isObj(value)),
-        GroupEntry(`array`, ({ value }) => isArrayLike(value)), // above object
-        GroupKey(`function`, ({ value }) => typeof value === `function`),
-        GroupKey(`null`, ({ value }) => value === null),
-        GroupKey(`undefined`, ({ value }) => value === undefined),
-        GroupPrtype(`__proto__`),
-    ];
-    const truthy = (value) => ({ predicate }) => predicate(value);
-    const selectGroup = (property) => groups.find(truthy(property)) ?? primitives;
-    const mutateGroup = (property) => selectGroup(property).push(property);
-    const propertyWhenError = (key, error) => ({ key, value: error, descr: undefined });
-    const propertyFromKeyThrowable = (key) => ({
-        key,
-        value: Reflect.get(target.data, key, target.receiver),
-        descr: Reflect.getOwnPropertyDescriptor(target.data, key),
-    });
-    const propertyFromKey = (key) => {
-        try {
-            return propertyFromKeyThrowable(key);
-        } catch (error) {
-            return propertyWhenError(key, error);
-        }
-    };
-    const ternaryCmp = (a, b) => a === b ? 0 : a > b ? 1 : -1;
-    const propertySorter = (a, b) =>
-        ternaryCmp(typeof a.key, typeof b.key) ||
-        ternaryCmp(isObj(a.value), isObj(b.value)) ||
-        ternaryCmp(typeof a.value, typeof b.value) ||
-        ternaryCmp(String(a.key), String(b.key));
-    cyclicRefDict.set(target.data, [target.path]);
-    keys.map(propertyFromKey).toSorted(propertySorter).forEach(mutateGroup);
-    const expanded = groups.filter((group) => group.verify).map((group) => group.expand).join(``);
-    const [origin, prefix, suffix] = !expanded.includes(`\n`) ? [``, ``, ``] : [formatCustom(
-        target.data === target.receiver ? target.pathResolve() : target.name,
-        opts.origin,
-    ), indented.current, indented.previous];
-    const output = formatCustom(prefix + expanded + suffix, opts.object);
-    return `(${length})${output}${origin}`;
-}
 
 function formatArray(target, options, cyclicRefDict) {
     const opts = normalizeOptions(options);
@@ -390,8 +416,15 @@ function isObj(value) {
     return Boolean(value) && typeof value === `object`;
 }
 
-function isGetter(desc = {}) {
-    return typeof desc.get === `function`;
+function isGetter(descriptor) {
+    return typeof descriptor.get === `function`;
+}
+
+function isEmpty(enumerable) {
+    for (const _ in enumerable) {
+        return false;
+    }
+    return true;
 }
 
 
@@ -721,51 +754,45 @@ class Target { // Overhaul to Metadata class / Context / State / TraversalState 
 //-----#
 
 function createDefaultOptions() { // existing object blocklist
-    const templateFormat = (
+    const format = (
         prefix = ``,
         suffix = ``,
         modify = identity,
         ignore = false,
     ) => ({ prefix, suffix, modify, ignore });
-    const templateIndent = (
+    const indent = (
         base = ``,
         fill = ``,
         size = 0,
     ) => ({ base, fill, size });
-    return {
+    const spread = (...setup) => {
+        const dict = { format, indent };
+        const apply = (fn, rest) => fn(...rest);
+        const toEntry = ([name, ...args]) => [name, apply(dict[name] ?? identity, args)];
+        const entries = setup.map(toEntry);
+        return Object.fromEntries(entries);
+    };
+    return freezeRecurse({
         newlineLimitGroup: 40,
         newlineLimitArray: 40,
         minimizeSameTypeArray: true,
         originProperty: true,
-        format: templateFormat(`[`, `]`),
-        indent: templateIndent(`|`, ` `, 8),
-        object: {
-            format: templateFormat(`{`, `}`),
-        },
-        descriptor: {
-            format: templateFormat(`'`, ``),
-        },
-        origin: {
-            format: templateFormat(`( `, ` )`),
-        },
-        header: {
-            format: templateFormat(`\\ `, ``),
-            indent: templateIndent(`|`, `¨`, 8),
-        },
-        prtype: {
-            format: templateFormat(`[[`, `]]`, strType),
-            indent: templateIndent(`|`, `-`, 4),
-            exclude: [
-                Object.prototype,
-                Array.prototype,
-                Iterator.prototype,
-            ],
-        },
+        format: format(`[`, `]`),
+        indent: indent(`|`, ` `, 8),
+        object: spread([`format`, `{`, `}`]),
+        descriptor: spread([`format`, `'`, ``]),
+        origin: spread([`format`, `( `, ` )`]),
+        header: spread([`format`, `\\ `, ``], [`indent`, `|`, `¨`, 8]),
+        prtype: spread([`format`, `[[`, `]]`, strType], [`indent`, `|`, `-`, 4], [`exclude`, [
+            `Object`,
+            `Array`,
+            `Iterator`,
+        ]]),
         type: {
-            format: templateFormat(`<`, `>`, strType, true),
+            format: format(`<`, `>`, strType, true),
         },
         error: {
-            format: templateFormat(`<ERROR>\n`, `\n</ERROR>`),
+            format: format(`<ERROR>\n`, `\n</ERROR>`),
         },
         invokeAsync: {
             enabled: true,
@@ -785,5 +812,13 @@ function createDefaultOptions() { // existing object blocklist
                 fnArgs: [],
             },
         },
-    };
+    });
+}
+
+function freezeRecurse(obj) {
+    if (isObj(obj) && !Object.isFrozen(obj)) {
+        Object.freeze(obj);
+        Reflect.ownKeys(obj).forEach((key) => freezeRecurse(obj[key]));
+    }
+    return obj;
 }
